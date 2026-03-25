@@ -1,6 +1,6 @@
 {
   "name": "lookin-server-mcp",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "MCP server for LookinServer iOS UI debugger - expose UI hierarchy to AI agents",
   "keywords": [
     "mcp",

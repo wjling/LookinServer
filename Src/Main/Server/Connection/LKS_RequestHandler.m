@@ -104,7 +104,19 @@
         }
         
         LookinConnectionResponseAttachment *responseAttachment = [LookinConnectionResponseAttachment new];
-        responseAttachment.data = [LookinHierarchyInfo staticInfoWithLookinVersion:clientVersion];
+        LookinHierarchyInfo *hierarchyInfo = [LookinHierarchyInfo staticInfoWithLookinVersion:clientVersion];
+        responseAttachment.data = hierarchyInfo;
+        
+        // 将 hierarchy 缓存到 MCP Bridge，供 AI 工具使用（运行时调用，无需 Swift header）
+        {
+            Class bridgeClass = NSClassFromString(@"LookinServer.LKS_MCPBridge");
+            if (!bridgeClass) bridgeClass = NSClassFromString(@"LKS_MCPBridge");
+            if (bridgeClass) {
+                id bridge = [bridgeClass performSelector:@selector(shared)];
+                [bridge performSelector:@selector(cacheLatestHierarchyInfo:) withObject:hierarchyInfo];
+            }
+        }
+        
         [[LKS_ConnectionManager sharedInstance] respond:responseAttachment requestType:requestType tag:tag];
         
     } else if (requestType == LookinRequestTypeInbuiltAttrModification) {

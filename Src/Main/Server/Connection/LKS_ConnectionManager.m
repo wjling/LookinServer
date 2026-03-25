@@ -61,6 +61,19 @@ NSString *const LKS_ConnectionDidEndNotificationName = @"LKS_ConnectionDidEndNot
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleGetLookinInfo:) name:@"GetLookinInfo" object:nil];
         
         self.requestHandler = [LKS_RequestHandler new];
+        
+        // 启动 MCP HTTP 侧信道（端口 9877），供 AI 工具获取 UI 数据
+        // 用运行时调用，避免 ObjC ↔ Swift 模块 header 路径问题
+        dispatch_async(dispatch_get_main_queue(), ^{
+            Class bridgeClass = NSClassFromString(@"LookinServer.LKS_MCPBridge");
+            if (!bridgeClass) {
+                bridgeClass = NSClassFromString(@"LKS_MCPBridge");
+            }
+            if (bridgeClass) {
+                id bridge = [bridgeClass performSelector:@selector(shared)];
+                [bridge performSelector:@selector(start)];
+            }
+        });
     }
     return self;
 }

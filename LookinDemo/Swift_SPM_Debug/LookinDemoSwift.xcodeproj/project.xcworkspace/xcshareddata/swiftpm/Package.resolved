@@ -1,14 +1,15 @@
 {
+  "originHash" : "0d652aeae3ac5d13da9df7c264b0d2b098fa89b4e162d7e39b17055e224c07bc",
   "pins" : [
     {
       "identity" : "lookinserver",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/QMUI/LookinServer",
+      "location" : "https://github.com/wjling/LookinServer.git",
       "state" : {
-        "branch" : "develop",
-        "revision" : "6637da86966513ceaf584e48835518d36f5aa977"
+        "branch" : "mcp",
+        "revision" : "33d82e3eb98322bc3b7ea0834fb51229cc8d01c7"
       }
     }
   ],
-  "version" : 2
+  "version" : 3
 }

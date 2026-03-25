@@ -381,9 +381,9 @@
 /* Begin XCRemoteSwiftPackageReference section */
 		A72E06532AFFF7E300061A5B /* XCRemoteSwiftPackageReference "LookinServer" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/QMUI/LookinServer";
+			repositoryURL = "https://github.com/wjling/LookinServer.git";
 			requirement = {
-				branch = develop;
+				branch = mcp;
 				kind = branch;
 			};
 		};

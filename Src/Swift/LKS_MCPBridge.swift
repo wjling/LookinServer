@@ -235,34 +235,32 @@ import Network
     
     /// 从主线程实时生成 hierarchy（无需 Lookin Mac 已连接）
     private static func generateFreshHierarchy() -> Data? {
-        // 调用 LookinHierarchyInfo.staticInfoWithLookinVersion:(nil)
-        // 用 NSInvocation 风格：先获取 Class 实例，再用 perform on instance
         guard let hierarchyClass = NSClassFromString("LookinHierarchyInfo") as? NSObject.Type else {
             return nil
         }
+        // 使用 KVC 方式：通过 NSInvocation-free 的 ObjC runtime 调用类方法
+        // perform() 对类方法也适用，但返回值是对象指针，工厂方法 (+1 retain) 需要 takeRetainedValue
+        // 若日后改为实例方法可换成 value(forKey:)
         let sel = NSSelectorFromString("staticInfoWithLookinVersion:")
         guard hierarchyClass.responds(to: sel) else { return nil }
-        // 类方法通过 objc_msgSend 风格调用，Swift 用 value(forKey:) 无法处理带参数的类方法
-        // 改用 NSObject perform 的实例形式：先获取 allocated 对象（此处直接用 class object）
-        // Swift 调用类方法：NSObject 子类的 perform 仅支持实例；对 Class 用 unsafeBitCast
-        let classAsObj = unsafeBitCast(hierarchyClass, to: NSObject.self)
-        guard let result = classAsObj.perform(sel, with: nil) else { return nil }
-        let info = result.takeUnretainedValue()
+        // staticInfoWithLookinVersion: 不符合 create rule（非 alloc/new/copy），ObjC ARC 返回 +0（autorelease）
+        // 必须用 takeUnretainedValue()，否则 Swift 再 release 一次 → double free → crash
+        let version = lookinServerVersion()
+        guard let info = hierarchyClass.perform(sel, with: version)?.takeUnretainedValue() else {
+            return nil
+        }
         return serializeHierarchyInfo(info)
     }
     
     /// 将 LookinHierarchyInfo 序列化为 JSON Data
     static func serializeHierarchyInfo(_ info: AnyObject) -> Data? {
-        // 获取 displayItems 属性
-        let displayItemsSel = NSSelectorFromString("displayItems")
-        guard info.responds(to: displayItemsSel),
-              let items = info.perform(displayItemsSel)?.takeUnretainedValue() as? [AnyObject] else {
+        // 用 KVC 获取 displayItems，安全处理各种返回类型
+        guard let infoObj = info as? NSObject,
+              let items = infoObj.value(forKey: "displayItems") as? [AnyObject] else {
             return nil
         }
         
-        let jsonArray = items.map { item -> [String: Any] in
-            serializeDisplayItem(item)
-        }
+        let jsonArray = items.map { serializeDisplayItem($0) }
         
         let root: [String: Any] = [
             "timestamp": Date().timeIntervalSince1970,
@@ -273,70 +271,133 @@ import Network
     }
     
     /// 递归序列化 LookinDisplayItem
+    ///
+    /// 安全原则：
+    /// 1. 只读取 LookinDisplayItem.h 中**明确声明**的属性，避免 NSUndefinedKeyException
+    /// 2. 用 responds(to:) 守门，防止跨版本属性缺失导致的 crash
+    /// 3. KVC 自动处理基本类型装箱（BOOL/float/CGRect → NSNumber/NSValue）
     static func serializeDisplayItem(_ item: AnyObject) -> [String: Any] {
         var dict = [String: Any]()
+        guard let itemObj = item as? NSObject else { return dict }
         
-        // className
-        if let viewObject = item.perform(NSSelectorFromString("viewObject"))?.takeUnretainedValue() {
-            if let className = viewObject.perform(NSSelectorFromString("classChainString"))?.takeUnretainedValue() as? String {
-                dict["className"] = className
-            } else if let selfClassName = viewObject.perform(NSSelectorFromString("selfClassName"))?.takeUnretainedValue() as? String {
-                dict["className"] = selfClassName
+        // className / oid：从 viewObject 或 layerObject（均为 LookinObject 类型）读取
+        // LookinObject.classChainList: [String]，第一个元素是自身 class 名
+        // LookinObject.oid: unsigned long，KVC 自动装箱为 NSNumber
+        if let viewObject = kvcObject(itemObj, key: "viewObject") {
+            if let chainList = viewObject.value(forKey: "classChainList") as? [String],
+               let first = chainList.first {
+                dict["className"] = first
             }
-            // oid (object identifier)
-            if let oidValue = viewObject.perform(NSSelectorFromString("oid"))?.takeUnretainedValue() as? NSNumber {
-                dict["oid"] = oidValue.uintValue
+            if let oidNum = viewObject.value(forKey: "oid") as? NSNumber {
+                dict["oid"] = oidNum.uintValue
             }
-        } else if let layerObject = item.perform(NSSelectorFromString("layerObject"))?.takeUnretainedValue() {
-            if let className = layerObject.perform(NSSelectorFromString("selfClassName"))?.takeUnretainedValue() as? String {
-                dict["className"] = className
+        } else if let layerObject = kvcObject(itemObj, key: "layerObject") {
+            if let chainList = layerObject.value(forKey: "classChainList") as? [String],
+               let first = chainList.first {
+                dict["className"] = first
             }
-        }
-        
-        // isHidden
-        if item.responds(to: NSSelectorFromString("isHidden")) {
-            let hiddenSel = NSSelectorFromString("isHidden")
-            let result = unsafeBitCast(item.perform(hiddenSel), to: NSNumber.self)
-            dict["isHidden"] = result.boolValue
-        }
-        
-        // alpha
-        if item.responds(to: NSSelectorFromString("alpha")) {
-            // alpha is float, need special handling via KVC
-            if let alpha = (item as? NSObject)?.value(forKey: "alpha") {
-                dict["alpha"] = alpha
+            if let oidNum = layerObject.value(forKey: "oid") as? NSNumber {
+                dict["oid"] = oidNum.uintValue
             }
         }
-        
-        // frame
-        if let frameStr = (item as? NSObject)?.value(forKeyPath: "frame") as? NSValue {
-            let rect = frameStr.cgRectValue
-            dict["frame"] = [
-                "x": rect.origin.x,
-                "y": rect.origin.y,
-                "width": rect.size.width,
-                "height": rect.size.height
-            ]
-        }
-        
-        // customDisplayTitle
-        if let title = (item as? NSObject)?.value(forKey: "customDisplayTitle") as? String {
+
+        // customDisplayTitle：用户自定义的展示标题（可选）
+        if let title = kvcString(itemObj, key: "customDisplayTitle") {
             dict["customDisplayTitle"] = title
         }
-        
-        // hostViewController
-        if let vcObject = item.perform(NSSelectorFromString("hostViewControllerObject"))?.takeUnretainedValue() {
-            if let vcClassName = vcObject.perform(NSSelectorFromString("selfClassName"))?.takeUnretainedValue() as? String {
-                dict["hostViewController"] = vcClassName
-            }
+
+        // hostViewController（LookinObject，同样读 classChainList）
+        if let vcObject = kvcObject(itemObj, key: "hostViewControllerObject"),
+           let chainList = vcObject.value(forKey: "classChainList") as? [String],
+           let first = chainList.first {
+            dict["hostViewController"] = first
         }
-        
-        // subitems (递归)
-        if let subitems = (item as? NSObject)?.value(forKey: "subitems") as? [AnyObject] {
+
+        // isHidden（BOOL → NSNumber via KVC）
+        if let hidden = kvcNumber(itemObj, key: "isHidden") {
+            dict["isHidden"] = hidden.boolValue
+        }
+
+        // alpha（float → NSNumber via KVC）
+        if let alpha = kvcNumber(itemObj, key: "alpha") {
+            dict["alpha"] = alpha.floatValue
+        }
+
+        // frame（CGRect → NSValue via KVC）
+        if let frameValue = kvcValue(itemObj, key: "frame") {
+            let rect = frameValue.cgRectValue
+            dict["frame"] = [
+                "x": Double(rect.origin.x),
+                "y": Double(rect.origin.y),
+                "width": Double(rect.size.width),
+                "height": Double(rect.size.height)
+            ]
+        }
+
+        // customInfo：判断是否为 custom display item
+        if kvcObject(itemObj, key: "customInfo") != nil {
+            dict["isCustom"] = true
+        }
+
+        // subitems（递归）
+        if let subitems = kvcArray(itemObj, key: "subitems") {
             dict["children"] = subitems.map { serializeDisplayItem($0) }
         }
         
         return dict
+    }
+    
+    // MARK: - Version Helper
+
+    /// 读取 LookinServer 的真实版本号
+    /// 优先从 LKS_VersionManager（ObjC class）读，fallback 读 Bundle，最终 fallback "1.0.0"
+    private static func lookinServerVersion() -> String {
+        // 方案1：LookinServer 自身有 +lookinVersion 类方法
+        if let cls = NSClassFromString("LKS_VersionManager") as? NSObject.Type,
+           cls.responds(to: NSSelectorFromString("lookinVersion")),
+           let v = cls.perform(NSSelectorFromString("lookinVersion"))?.takeUnretainedValue() as? String {
+            return v
+        }
+        // 方案2：读 Bundle 里的 CFBundleShortVersionString
+        if let v = Bundle(for: LKS_MCPBridge.self).infoDictionary?["CFBundleShortVersionString"] as? String,
+           v.split(separator: ".").count == 3 {
+            return v
+        }
+        // 方案3：hardcode 当前已知版本，格式合法即可
+        return "1.2.8"
+    }
+
+    // MARK: - KVC Safe Helpers
+    // 用 responds(to:) 守门，避免 NSUndefinedKeyException crash
+    
+    private static func kvcObject(_ obj: NSObject, key: String) -> NSObject? {
+        let sel = NSSelectorFromString(key)
+        guard obj.responds(to: sel) else { return nil }
+        return obj.value(forKey: key) as? NSObject
+    }
+    
+    private static func kvcString(_ obj: NSObject, key: String) -> String? {
+        let sel = NSSelectorFromString(key)
+        guard obj.responds(to: sel) else { return nil }
+        return obj.value(forKey: key) as? String
+    }
+    
+    private static func kvcNumber(_ obj: NSObject, key: String) -> NSNumber? {
+        let sel = NSSelectorFromString(key)
+        guard obj.responds(to: sel) else { return nil }
+        return obj.value(forKey: key) as? NSNumber
+    }
+    
+    private static func kvcValue(_ obj: NSObject, key: String) -> NSValue? {
+        let sel = NSSelectorFromString(key)
+        guard obj.responds(to: sel) else { return nil }
+        return obj.value(forKey: key) as? NSValue
+    }
+    
+    private static func kvcArray(_ obj: NSObject, key: String) -> [AnyObject]? {
+        let sel = NSSelectorFromString(key)
+        guard obj.responds(to: sel) else { return nil }
+        return obj.value(forKey: key) as? [AnyObject]
     }
 }
 

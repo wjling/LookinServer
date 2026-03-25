@@ -24,6 +24,14 @@ export interface DisplayItem {
   frame?: ViewFrame;
   customDisplayTitle?: string;
   hostViewController?: string;
+  /** 该节点为开发者通过 Lookin UserCustom API 注册的业务语义节点，不对应真实 View */
+  isCustom?: boolean;
+  /** isCustom 节点的业务标题（如"购物车列表容器"） */
+  customTitle?: string;
+  /** isCustom 节点的业务副标题 */
+  customSubtitle?: string;
+  /** isCustom 节点在窗口中的位置（可能为空） */
+  frameInWindow?: ViewFrame;
   children?: DisplayItem[];
 }
 

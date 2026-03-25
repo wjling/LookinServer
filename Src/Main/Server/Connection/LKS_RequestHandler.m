@@ -9,6 +9,7 @@
 //
 
 #import "LKS_RequestHandler.h"
+#import "LKS_MCPBridge.h"
 #import "NSObject+LookinServer.h"
 #import "UIImage+LookinServer.h"
 #import "LKS_ConnectionManager.h"
@@ -107,15 +108,8 @@
         LookinHierarchyInfo *hierarchyInfo = [LookinHierarchyInfo staticInfoWithLookinVersion:clientVersion];
         responseAttachment.data = hierarchyInfo;
         
-        // 将 hierarchy 缓存到 MCP Bridge，供 AI 工具使用（运行时调用，无需 Swift header）
-        {
-            Class bridgeClass = NSClassFromString(@"LookinServer.LKS_MCPBridge");
-            if (!bridgeClass) bridgeClass = NSClassFromString(@"LKS_MCPBridge");
-            if (bridgeClass) {
-                id bridge = [bridgeClass performSelector:@selector(shared)];
-                [bridge performSelector:@selector(cacheLatestHierarchyInfo:) withObject:hierarchyInfo];
-            }
-        }
+        // 将 hierarchy 缓存到 MCP Bridge，供 AI 工具使用
+        [[LKS_MCPBridge sharedInstance] cacheLatestHierarchyInfo:hierarchyInfo];
         
         [[LKS_ConnectionManager sharedInstance] respond:responseAttachment requestType:requestType tag:tag];
         

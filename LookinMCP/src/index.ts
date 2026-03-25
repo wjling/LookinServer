@@ -335,9 +335,19 @@ function renderTree(
       : "";
     const oid = item.oid ? ` #${item.oid}` : "";
 
-    lines.push(
-      `${indent}${item.className ?? "Unknown"}${title}${hidden}${alpha}${frame}${vc}${oid}`
-    );
+    // 自定义节点用不同格式展示，突出业务语义
+    if (item.isCustom) {
+      const customLabel = item.customTitle ?? item.customDisplayTitle ?? "(custom)";
+      const sub = item.customSubtitle ? ` · ${item.customSubtitle}` : "";
+      const fw = item.frameInWindow
+        ? ` {${item.frameInWindow.x},${item.frameInWindow.y} ${item.frameInWindow.width}×${item.frameInWindow.height}}`
+        : "";
+      lines.push(`${indent}[Custom] ${customLabel}${sub}${fw}`);
+    } else {
+      lines.push(
+        `${indent}${item.className ?? "Unknown"}${title}${hidden}${alpha}${frame}${vc}${oid}`
+      );
+    }
 
     if (item.children) {
       renderTree(item.children, depth + 1, lines);
@@ -353,6 +363,11 @@ function formatViewSummary(item: DisplayItem): string {
       `{${item.frame.x},${item.frame.y} ${item.frame.width}×${item.frame.height}}`
     );
   if (item.isHidden) parts.push("[hidden]");
+  if (item.isCustom) {
+    const label = item.customTitle ?? "(custom)";
+    const sub = item.customSubtitle ? `·${item.customSubtitle}` : "";
+    parts.push(`[custom: ${label}${sub}]`);
+  }
   if (item.hostViewController) parts.push(`<${item.hostViewController}>`);
   if (item.oid) parts.push(`#${item.oid}`);
   return parts.join(" ");
@@ -373,6 +388,17 @@ function formatViewDetail(item: DisplayItem): string {
     );
   }
   lines.push(`隐藏：${item.isHidden ? "是" : "否"}`);
+  if (item.isCustom) {
+    lines.push(`节点类型：业务自定义节点（不对应真实 View）`);
+    if (item.customTitle) lines.push(`业务标题：${item.customTitle}`);
+    if (item.customSubtitle) lines.push(`业务副标题：${item.customSubtitle}`);
+    if (item.frameInWindow) {
+      lines.push(
+        `窗口位置：x=${item.frameInWindow.x}, y=${item.frameInWindow.y}`,
+        `窗口尺寸：${item.frameInWindow.width} × ${item.frameInWindow.height}`
+      );
+    }
+  }
   if (item.alpha !== undefined) lines.push(`透明度：${item.alpha}`);
   if (item.hostViewController)
     lines.push(`所属 ViewController：${item.hostViewController}`);

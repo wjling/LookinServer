@@ -15,7 +15,7 @@ iOS App                    MCP Server               AI（CodeMaker / Claude）
 └─────────────────┘        └──────────────┘         └──────────────────────┘
 ```
 
-iOS 侧通过 `LKS_MCPBridge`（NWListener HTTP Server）暴露 UI 数据，MCP Server 作为中间层供 AI 工具调用。
+iOS 侧通过 `LKS_MCPBridge`（POSIX TCP Socket + GCD HTTP Server）暴露 UI 数据，MCP Server 作为中间层供 AI 工具调用。
 
 ---
 
@@ -26,8 +26,8 @@ iOS 侧通过 `LKS_MCPBridge`（NWListener HTTP Server）暴露 UI 数据，MCP 
 **CocoaPods：**
 
 ```ruby
-# 使用包含 MCP Bridge 的 fork 版本，必须用 /Swift subspec
-pod 'LookinServer/Swift',
+# MCP Bridge 已内置于 Core（纯 OC），OC 项目和 Swift 项目均可直接使用
+pod 'LookinServer',
     :git => 'https://github.com/wjling/LookinServer.git',
     :branch => 'mcp',
     :configurations => ['Debug']
@@ -129,7 +129,7 @@ AI：→ 调用 lookin_summarize，输出摘要
 
 - **与 Lookin Mac App 互不干扰**：MCP Bridge 使用独立端口 9877，不影响原有 Lookin 调试功能
 - **仅在 Debug 模式使用**：建议 Podfile 加 `:configurations => ['Debug']`，Release 包不含此代码
-- **需要 `/Swift` subspec**：CocoaPods 默认只引入 Core（OC），MCP Bridge 在 Swift subspec 中
+- **纯 OC 实现，无 Swift 依赖**：MCP Bridge 已内置于 `Core` subspec，OC 项目无需额外配置
 
 ---
 

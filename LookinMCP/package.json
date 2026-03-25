@@ -1,11 +1,11 @@
 {
-  "name": "lookin-mcp",
+  "name": "lookin-server-mcp",
   "version": "1.0.0",
-  "description": "MCP server for Lookin iOS UI debugger - expose UI hierarchy to AI agents",
-  "keywords": ["mcp", "lookin", "ios", "ui", "debug", "hierarchy"],
-  "author": "",
+  "description": "MCP server for LookinServer iOS UI debugger - expose UI hierarchy to AI agents",
+  "keywords": ["mcp", "lookin", "lookinserver", "ios", "ui", "debug", "hierarchy"],
+  "author": "wjling",
   "license": "MIT",
-  "homepage": "https://github.com/your-username/lookin-mcp",
+  "homepage": "https://github.com/wjling/LookinServer/tree/mcp/LookinMCP",
   "bin": {
     "lookin-mcp": "./dist/index.js"
   },

@@ -23,7 +23,7 @@ import {
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import { LookinBridgeClient, DisplayItem } from "./bridge-client.js";
+import { LookinBridgeClient, DisplayItem, ColorValue } from "./bridge-client.js";
 
 // ─── 初始化 ──────────────────────────────────────────────────────────────────
 
@@ -133,6 +133,58 @@ const TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {},
+    },
+  },
+  {
+    name: "lookin_get_view_attrs",
+    description:
+      "根据视图 oid 获取该视图的完整 UI 属性，包括：\n" +
+      "- frame（位置与尺寸）\n" +
+      "- backgroundColor、cornerRadius、borderWidth/Color\n" +
+      "- shadowColor/Opacity/Radius/Offset\n" +
+      "- UILabel/UITextField/UITextView 的 text、font、textColor、numberOfLines\n" +
+      "- UIStackView 的 axis、spacing\n" +
+      "适合在与 Figma 数据对比前，先获取某个视图的完整属性。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        oid: {
+          type: "number",
+          description: "视图的对象 ID（从 hierarchy 结果中的 oid 字段获取）",
+        },
+      },
+      required: ["oid"],
+    },
+  },
+  {
+    name: "lookin_diff_with_figma",
+    description:
+      "将 iOS 视图的实际属性与 Figma 设计稿数据进行对比，输出差异报告。\n" +
+      "可帮助开发者快速发现 UI 还原中的偏差，如颜色、字号、圆角、间距不符等问题。\n\n" +
+      "使用方式：\n" +
+      "1. 通过 Figma MCP（get_figma_data）获取对应节点数据\n" +
+      "2. 从层级树找到对应 iOS 视图的 oid\n" +
+      "3. 调用本工具传入 oid 和 figmaNode 数据\n\n" +
+      "输出格式：每项属性标注 ✅ 匹配 / ⚠️ 偏差 / ❌ 不匹配 / ➖ 仅 Figma 有 / ➕ 仅 iOS 有",
+    inputSchema: {
+      type: "object",
+      properties: {
+        oid: {
+          type: "number",
+          description: "iOS 视图的对象 ID",
+        },
+        figmaNode: {
+          type: "object",
+          description:
+            "从 Figma MCP get_figma_data 获取的单个节点对象，包含 layout、fills、" +
+            "strokes、borderRadius、textStyle 等字段。直接传入 nodes 数组中的某一项即可。",
+        },
+        tolerance: {
+          type: "number",
+          description: "数值类属性（尺寸、颜色分量等）的容差，默认为 1（即 1pt/1色值单位内视为匹配）",
+        },
+      },
+      required: ["oid", "figmaNode"],
     },
   },
 ];
@@ -271,6 +323,47 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               ),
             },
           ],
+        };
+      }
+
+      case "lookin_get_view_attrs": {
+        const params = args as { oid: number };
+        const hierarchy = await client.getHierarchy();
+        const item = client.findItemByOid(hierarchy.items, params.oid);
+        if (!item) {
+          return {
+            content: [{
+              type: "text",
+              text: `未找到 oid=${params.oid} 的视图，请先调用 lookin_refresh_hierarchy 刷新数据。`,
+            }],
+          };
+        }
+        return {
+          content: [{ type: "text", text: formatViewAttrs(item) }],
+        };
+      }
+
+      case "lookin_diff_with_figma": {
+        const params = args as {
+          oid: number;
+          figmaNode: Record<string, unknown>;
+          tolerance?: number;
+        };
+        const hierarchy = await client.getHierarchy();
+        const item = client.findItemByOid(hierarchy.items, params.oid);
+        if (!item) {
+          return {
+            content: [{
+              type: "text",
+              text: `未找到 oid=${params.oid} 的视图，请先调用 lookin_refresh_hierarchy 刷新数据。`,
+            }],
+          };
+        }
+        return {
+          content: [{
+            type: "text",
+            text: diffWithFigma(item, params.figmaNode, params.tolerance ?? 1),
+          }],
         };
       }
 
@@ -452,6 +545,478 @@ function summarizeHierarchy(items: DisplayItem[], timestamp: number): string {
 
   if (vcSet.size === 0) {
     lines.push("  （未识别到 ViewController 信息）");
+  }
+
+  return lines.join("\n");
+}
+
+// ─── 新增：视图完整属性格式化 ─────────────────────────────────────────────────
+
+function colorStr(c: ColorValue): string {
+  return `rgba(${c.r},${c.g},${c.b},${c.a})  ${c.hex}`;
+}
+
+function formatViewAttrs(item: DisplayItem): string {
+  const lines: string[] = [
+    `🔍 视图完整属性`,
+    `═══════════════════════════════`,
+    `类名：${item.className ?? "Unknown"}${item.oid !== undefined ? `  #${item.oid}` : ""}`,
+    ``,
+    `── 布局 ──`,
+  ];
+
+  if (item.frame) {
+    lines.push(
+      `  frame:   x=${item.frame.x}  y=${item.frame.y}  w=${item.frame.width}  h=${item.frame.height}`
+    );
+  }
+  lines.push(`  hidden:  ${item.isHidden ? "YES" : "NO"}`);
+  if (item.alpha !== undefined && item.alpha < 1) {
+    lines.push(`  alpha:   ${item.alpha}`);
+  }
+
+  lines.push(``, `── 外观 ──`);
+  if (item.backgroundColor && typeof item.backgroundColor === "object") {
+    lines.push(`  backgroundColor:  ${colorStr(item.backgroundColor)}`);
+  } else {
+    lines.push(`  backgroundColor:  (未设置 / 透明)`);
+  }
+  if (item.cornerRadius !== undefined && item.cornerRadius !== null) {
+    lines.push(`  cornerRadius:     ${item.cornerRadius}`);
+  }
+  if (item.borderWidth !== undefined && item.borderWidth > 0) {
+    lines.push(`  borderWidth:      ${item.borderWidth}`);
+    if (item.borderColor && typeof item.borderColor === "object") {
+      lines.push(`  borderColor:      ${colorStr(item.borderColor)}`);
+    }
+  }
+  if (item.shadowOpacity !== undefined && item.shadowOpacity > 0) {
+    lines.push(
+      `  shadow:  opacity=${item.shadowOpacity}  radius=${item.shadowRadius ?? 0}`,
+      `           offset=(${item.shadowOffsetWidth ?? 0}, ${item.shadowOffsetHeight ?? 0})`,
+    );
+    if (item.shadowColor) {
+      lines.push(`           color=${colorStr(item.shadowColor)}`);
+    }
+  }
+
+  if (item.label && Object.keys(item.label).length > 0) {
+    lines.push(``, `── 文本 ──`);
+    if (item.label.text !== undefined) {
+      lines.push(`  text:        "${item.label.text}"`);
+    }
+    if (item.label.fontName) {
+      lines.push(`  font:        ${item.label.fontName}  ${item.label.fontSize ?? "?"}pt`);
+    }
+    if (item.label.textColor) {
+      lines.push(`  textColor:   ${colorStr(item.label.textColor)}`);
+    }
+    if (item.label.numberOfLines !== undefined) {
+      lines.push(`  lines:       ${item.label.numberOfLines === 0 ? "∞" : item.label.numberOfLines}`);
+    }
+    const alignMap: Record<number, string> = { 0: "left", 1: "center", 2: "right", 3: "justified", 4: "natural" };
+    if (item.label.textAlignment !== undefined) {
+      lines.push(`  alignment:   ${alignMap[item.label.textAlignment] ?? item.label.textAlignment}`);
+    }
+  }
+
+  if (item.stackView && Object.keys(item.stackView).length > 0) {
+    lines.push(``, `── UIStackView ──`);
+    if (item.stackView.axis) lines.push(`  axis:      ${item.stackView.axis}`);
+    if (item.stackView.spacing !== undefined) lines.push(`  spacing:   ${item.stackView.spacing}`);
+  }
+
+  if (item.hostViewController) {
+    lines.push(``, `── 归属 ──`, `  ViewController: ${item.hostViewController}`);
+  }
+
+  return lines.join("\n");
+}
+
+// ─── 新增：Figma Diff 核心逻辑 ────────────────────────────────────────────────
+
+interface DiffItem {
+  label: string;
+  status: "✅" | "⚠️" | "❌" | "➖" | "➕";
+  detail: string;
+}
+
+/** 从 Figma globalVars.styles 中解析颜色字符串，返回 {r,g,b,a} */
+function parseFigmaColor(raw: unknown): { r: number; g: number; b: number; a: number } | null {
+  if (!raw) return null;
+
+  // 数组形式：取第一个元素
+  const val = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof val !== "string") return null;
+
+  // #RRGGBB
+  const hexMatch = val.match(/^#([0-9a-fA-F]{6})$/);
+  if (hexMatch) {
+    const n = parseInt(hexMatch[1], 16);
+    return { r: (n >> 16) & 0xff, g: (n >> 8) & 0xff, b: n & 0xff, a: 1 };
+  }
+  // rgba(r, g, b, a) 或 rgb(r, g, b)
+  const rgbaMatch = val.match(/rgba?\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)(?:\s*,\s*([\d.]+))?\s*\)/);
+  if (rgbaMatch) {
+    const [, r, g, b, a] = rgbaMatch;
+    return {
+      r: Math.round(parseFloat(r)),
+      g: Math.round(parseFloat(g)),
+      b: Math.round(parseFloat(b)),
+      a: a !== undefined ? parseFloat(a) : 1,
+    };
+  }
+  return null;
+}
+
+/** 从 Figma borderRadius 字符串中提取数值（如 "20px" → 20） */
+function parsePx(val: unknown): number | null {
+  if (val === undefined || val === null) return null;
+  if (typeof val === "number") return val;
+  if (typeof val === "string") {
+    const m = val.match(/^([\d.]+)px$/);
+    return m ? parseFloat(m[1]) : null;
+  }
+  return null;
+}
+
+function colorEqual(ios: ColorValue, figma: { r: number; g: number; b: number; a: number }, tol: number): boolean {
+  // RGB 容差：tol 单位为 0-255 的整数色值
+  // Alpha 容差：固定 0.05（约 5%），独立于 tol，因为 alpha 是 0-1 范围
+  return (
+    Math.abs(ios.r - figma.r) <= tol &&
+    Math.abs(ios.g - figma.g) <= tol &&
+    Math.abs(ios.b - figma.b) <= tol &&
+    Math.abs(ios.a - figma.a) <= 0.05
+  );
+}
+
+function numEqual(a: number, b: number, tol: number): boolean {
+  return Math.abs(a - b) <= tol;
+}
+
+function diffWithFigma(
+  item: DisplayItem,
+  figmaNode: Record<string, unknown>,
+  tolerance: number
+): string {
+  const diffs: DiffItem[] = [];
+
+  // globalVars 可能在 figmaNode 本身，也可能在整个 get_figma_data 响应的顶层
+  // 按优先级依次查找，兼容 AI 直接传整个响应 或 单个节点 两种调用方式
+  const topLevel = figmaNode as Record<string, unknown>;
+  const globalVars =
+    (topLevel["globalVars"] as Record<string, unknown> | undefined) ??
+    ((topLevel["document"] as Record<string, unknown> | undefined)?.["globalVars"] as Record<string, unknown> | undefined) ??
+    {};
+  const styles = (globalVars["styles"] as Record<string, unknown> | undefined) ?? {};
+
+  // ── 解析 Figma 节点的 layout ─────────────────────────────────────────────
+  // 优先从 globalVars.styles 取（使用了 Figma 变量语义），其次直接读节点标准字段
+  const layoutKey = figmaNode["layout"] as string | undefined;
+  const layout = layoutKey ? (styles[layoutKey] as Record<string, unknown> | undefined) : undefined;
+
+  // 尺寸：globalVars.styles.dimensions → Figma 标准字段 width/height → absoluteBoundingBox
+  const absBB = figmaNode["absoluteBoundingBox"] as Record<string, number> | undefined;
+  const figmaDimensions: Record<string, number | undefined> =
+    (layout?.["dimensions"] as Record<string, number> | undefined) ?? {
+      width: (figmaNode["width"] as number | undefined) ?? absBB?.["width"],
+      height: (figmaNode["height"] as number | undefined) ?? absBB?.["height"],
+    };
+
+  // 位置：globalVars → absoluteBoundingBox（注意：Figma 坐标是相对画板，非相对父节点）
+  const figmaLocation: Record<string, number | undefined> =
+    (layout?.["locationRelativeToParent"] as Record<string, number> | undefined) ?? {
+      x: absBB?.["x"],
+      y: absBB?.["y"],
+    };
+
+  const figmaPadding = layout?.["padding"] as string | undefined;
+  // gap：globalVars.styles → Figma 标准字段 itemSpacing
+  const figmaGap =
+    (layout?.["gap"] as string | undefined) ??
+    ((figmaNode["itemSpacing"] as number | undefined) !== undefined
+      ? String(figmaNode["itemSpacing"]) + "px"
+      : undefined);
+  const figmaMode = layout?.["mode"] as string | undefined;
+
+  // ── frame 对比 ────────────────────────────────────────────────────────────
+  if (item.frame && (figmaDimensions["width"] !== undefined || figmaDimensions["height"] !== undefined)) {
+    const fw = figmaDimensions["width"];
+    const fh = figmaDimensions["height"];
+    if (fw !== undefined) {
+      const ok = numEqual(item.frame.width, fw, tolerance);
+      diffs.push({
+        label: "width",
+        status: ok ? "✅" : "❌",
+        detail: ok
+          ? `${item.frame.width}pt`
+          : `iOS=${item.frame.width}pt  Figma=${fw}pt  diff=${item.frame.width - fw > 0 ? "+" : ""}${(item.frame.width - fw).toFixed(1)}pt`,
+      });
+    }
+    if (fh !== undefined) {
+      const ok = numEqual(item.frame.height, fh, tolerance);
+      diffs.push({
+        label: "height",
+        status: ok ? "✅" : "❌",
+        detail: ok
+          ? `${item.frame.height}pt`
+          : `iOS=${item.frame.height}pt  Figma=${fh}pt  diff=${item.frame.height - fh > 0 ? "+" : ""}${(item.frame.height - fh).toFixed(1)}pt`,
+      });
+    }
+  } else if (!item.frame && (figmaDimensions["width"] !== undefined || figmaDimensions["height"] !== undefined)) {
+    diffs.push({ label: "frame", status: "➖", detail: `Figma 有尺寸数据但 iOS 未获取到 frame` });
+  }
+
+  if (item.frame && figmaLocation) {
+    const fx = figmaLocation["x"];
+    const fy = figmaLocation["y"];
+    if (fx !== undefined) {
+      const ok = numEqual(item.frame.x, fx, tolerance);
+      diffs.push({
+        label: "x (相对父节点)",
+        status: ok ? "✅" : "⚠️",
+        detail: ok ? `${item.frame.x}pt` : `iOS=${item.frame.x}pt  Figma=${fx}pt`,
+      });
+    }
+    if (fy !== undefined) {
+      const ok = numEqual(item.frame.y, fy, tolerance);
+      diffs.push({
+        label: "y (相对父节点)",
+        status: ok ? "✅" : "⚠️",
+        detail: ok ? `${item.frame.y}pt` : `iOS=${item.frame.y}pt  Figma=${fy}pt`,
+      });
+    }
+  }
+
+  // ── backgroundColor 对比 ─────────────────────────────────────────────────
+  const figmaBgColorKey = figmaNode["fills"] as string | undefined;
+  if (figmaBgColorKey) {
+    const rawColor = styles[figmaBgColorKey];
+    const figmaColor = parseFigmaColor(rawColor);
+    if (figmaColor) {
+      if (item.backgroundColor) {
+        const ok = colorEqual(item.backgroundColor, figmaColor, tolerance);
+        diffs.push({
+          label: "backgroundColor",
+          status: ok ? "✅" : "❌",
+          detail: ok
+            ? `${item.backgroundColor.hex}  rgba(${figmaColor.r},${figmaColor.g},${figmaColor.b},${figmaColor.a})`
+            : `iOS=${item.backgroundColor.hex} rgba(${item.backgroundColor.r},${item.backgroundColor.g},${item.backgroundColor.b},${item.backgroundColor.a})\n     Figma=${figmaBgColorKey} → rgba(${figmaColor.r},${figmaColor.g},${figmaColor.b},${figmaColor.a})`,
+        });
+      } else {
+        diffs.push({
+          label: "backgroundColor",
+          status: "➖",
+          detail: `Figma 指定 ${figmaBgColorKey} → rgba(${figmaColor.r},${figmaColor.g},${figmaColor.b},${figmaColor.a})，iOS 未设置`,
+        });
+      }
+    }
+  }
+
+  // ── cornerRadius 对比 ─────────────────────────────────────────────────────
+  const figmaCornerRadiusRaw = figmaNode["borderRadius"];
+  const figmaCornerRadius = parsePx(figmaCornerRadiusRaw);
+  if (figmaCornerRadius !== null) {
+    if (item.cornerRadius !== undefined) {
+      const ok = numEqual(item.cornerRadius, figmaCornerRadius, tolerance);
+      diffs.push({
+        label: "cornerRadius",
+        status: ok ? "✅" : "❌",
+        detail: ok
+          ? `${item.cornerRadius}pt`
+          : `iOS=${item.cornerRadius}pt  Figma=${figmaCornerRadius}pt`,
+      });
+    } else {
+      diffs.push({
+        label: "cornerRadius",
+        status: "➖",
+        detail: `Figma=${figmaCornerRadius}pt，iOS 未获取到（可能为 0 或数据未加载）`,
+      });
+    }
+  }
+
+  // ── border 对比 ───────────────────────────────────────────────────────────
+  const figmaStrokeWeightRaw = figmaNode["strokeWeight"];
+  const figmaStrokeWeight = parsePx(figmaStrokeWeightRaw);
+  if (figmaStrokeWeight !== null && figmaStrokeWeight > 0) {
+    if (item.borderWidth !== undefined) {
+      const ok = numEqual(item.borderWidth, figmaStrokeWeight, tolerance * 0.5); // 描边精度要求高
+      diffs.push({
+        label: "borderWidth",
+        status: ok ? "✅" : "⚠️",
+        detail: ok
+          ? `${item.borderWidth}pt`
+          : `iOS=${item.borderWidth}pt  Figma=${figmaStrokeWeight}pt`,
+      });
+    } else {
+      diffs.push({
+        label: "borderWidth",
+        status: "➖",
+        detail: `Figma=${figmaStrokeWeight}pt，iOS 未获取到`,
+      });
+    }
+
+    const strokeColorKey = figmaNode["strokes"] as string | undefined;
+    if (strokeColorKey) {
+      const rawStroke = styles[strokeColorKey] as Record<string, unknown> | undefined;
+      const strokeColors = rawStroke?.["colors"] as unknown[] | undefined;
+      const figmaStrokeColor = parseFigmaColor(strokeColors?.[0] ?? strokeColorKey);
+      if (figmaStrokeColor && item.borderColor) {
+        const ok = colorEqual(item.borderColor, figmaStrokeColor, tolerance);
+        diffs.push({
+          label: "borderColor",
+          status: ok ? "✅" : "❌",
+          detail: ok
+            ? `${item.borderColor.hex}`
+            : `iOS=${item.borderColor.hex}  Figma=rgba(${figmaStrokeColor.r},${figmaStrokeColor.g},${figmaStrokeColor.b},${figmaStrokeColor.a})`,
+        });
+      }
+    }
+  }
+
+  // ── 文字属性对比（UILabel） ───────────────────────────────────────────────
+  const figmaTextStyle = figmaNode["textStyle"] as string | undefined;
+  if (figmaTextStyle) {
+    const ts = styles[figmaTextStyle] as Record<string, unknown> | undefined;
+    if (ts) {
+      const figmaFontSize = ts["fontSize"] as number | undefined;
+      const figmaFontFamily = ts["fontFamily"] as string | undefined;
+      const figmaFontWeight = ts["fontWeight"] as number | undefined;
+
+      if (item.label) {
+        // fontSize
+        if (figmaFontSize !== undefined && item.label.fontSize !== undefined) {
+          const ok = numEqual(item.label.fontSize, figmaFontSize, tolerance);
+          diffs.push({
+            label: "fontSize",
+            status: ok ? "✅" : "❌",
+            detail: ok
+              ? `${item.label.fontSize}pt`
+              : `iOS=${item.label.fontSize}pt  Figma=${figmaFontSize}pt`,
+          });
+        } else if (figmaFontSize !== undefined) {
+          diffs.push({ label: "fontSize", status: "➖", detail: `Figma=${figmaFontSize}pt，iOS 未获取到` });
+        }
+
+        // fontFamily
+        if (figmaFontFamily && item.label.fontName) {
+          // iOS fontName 可能是 "PingFangSC-Regular"，只取 family 部分对比
+          const iosFamilyNorm = item.label.fontName.replace(/[-_].+$/, "").toLowerCase().replace(/\s/g, "");
+          const figmaFamilyNorm = figmaFontFamily.toLowerCase().replace(/\s/g, "");
+          const ok = iosFamilyNorm.includes(figmaFamilyNorm) || figmaFamilyNorm.includes(iosFamilyNorm);
+          diffs.push({
+            label: "fontFamily",
+            status: ok ? "✅" : "⚠️",
+            detail: ok
+              ? `${item.label.fontName}`
+              : `iOS="${item.label.fontName}"  Figma="${figmaFontFamily}"`,
+          });
+        }
+
+        // fontWeight（Figma 用数字：400=Regular, 500=Medium, 700=Bold）
+        if (figmaFontWeight !== undefined && item.label.fontName) {
+          const iosFontNameLower = item.label.fontName.toLowerCase();
+          const figmaWeightLabel =
+            figmaFontWeight >= 700 ? "bold/heavy" :
+            figmaFontWeight >= 500 ? "medium/semibold" : "regular/light";
+          const iosWeightLabel =
+            iosFontNameLower.includes("bold") || iosFontNameLower.includes("heavy") ? "bold/heavy" :
+            iosFontNameLower.includes("medium") || iosFontNameLower.includes("semibold") ? "medium/semibold" : "regular/light";
+          const ok = figmaWeightLabel === iosWeightLabel;
+          diffs.push({
+            label: "fontWeight",
+            status: ok ? "✅" : "⚠️",
+            detail: ok
+              ? `${figmaFontWeight} (${figmaWeightLabel})`
+              : `iOS 字重="${iosWeightLabel}"  Figma=${figmaFontWeight} (${figmaWeightLabel})`,
+          });
+        }
+      } else {
+        // 是文字节点但 iOS 没有 label 数据
+        if (figmaFontSize !== undefined) {
+          diffs.push({ label: "fontSize", status: "➖", detail: `Figma=${figmaFontSize}pt，iOS 视图未识别为文字控件` });
+        }
+      }
+    }
+  }
+
+  // ── 文字颜色对比 ──────────────────────────────────────────────────────────
+  // Figma TEXT 节点的 fills 就是文字颜色
+  if (figmaNode["type"] === "TEXT" && figmaBgColorKey) {
+    const rawTextColor = styles[figmaBgColorKey];
+    const figmaTextColor = parseFigmaColor(rawTextColor);
+    if (figmaTextColor && item.label?.textColor) {
+      const ok = colorEqual(item.label.textColor, figmaTextColor, tolerance);
+      diffs.push({
+        label: "textColor",
+        status: ok ? "✅" : "❌",
+        detail: ok
+          ? `${item.label.textColor.hex}`
+          : `iOS=${item.label.textColor.hex} rgba(${item.label.textColor.r},${item.label.textColor.g},${item.label.textColor.b},${item.label.textColor.a})\n     Figma=rgba(${figmaTextColor.r},${figmaTextColor.g},${figmaTextColor.b},${figmaTextColor.a})`,
+      });
+    }
+  }
+
+  // ── UIStackView spacing / padding 对比 ────────────────────────────────────
+  if (figmaGap && item.stackView?.spacing !== undefined) {
+    const figmaSpacing = parsePx(figmaGap);
+    if (figmaSpacing !== null) {
+      const ok = numEqual(item.stackView.spacing, figmaSpacing, tolerance);
+      diffs.push({
+        label: "spacing (gap)",
+        status: ok ? "✅" : "⚠️",
+        detail: ok
+          ? `${item.stackView.spacing}pt`
+          : `iOS=${item.stackView.spacing}pt  Figma=${figmaSpacing}pt`,
+      });
+    }
+  } else if (figmaGap && !item.stackView) {
+    diffs.push({ label: "spacing (gap)", status: "➖", detail: `Figma gap=${figmaGap}，iOS 视图不是 UIStackView 或数据未获取` });
+  }
+
+  // ── 输出报告 ──────────────────────────────────────────────────────────────
+  if (diffs.length === 0) {
+    return (
+      `📋 Figma Diff 报告\n` +
+      `═══════════════════════════════\n` +
+      `视图：${item.className ?? "Unknown"}  #${item.oid}\n\n` +
+      `⚠️ 未能提取到可对比的属性。\n` +
+      `请确认：\n` +
+      `  1. figmaNode 数据包含 layout/fills/strokes/borderRadius/textStyle 字段\n` +
+      `  2. figmaNode 附带了 globalVars.styles 字典（传入完整 get_figma_data 响应即可）\n` +
+      `  3. iOS 端已更新到最新 LookinServer（支持 attributesGroupList 序列化）`
+    );
+  }
+
+  const passCount = diffs.filter((d) => d.status === "✅").length;
+  const warnCount = diffs.filter((d) => d.status === "⚠️").length;
+  const failCount = diffs.filter((d) => d.status === "❌").length;
+  const onlyFigma = diffs.filter((d) => d.status === "➖").length;
+
+  const headerLine =
+    failCount > 0 ? "❌ 存在不匹配属性" :
+    warnCount > 0 ? "⚠️  存在偏差" : "✅ 全部匹配";
+
+  const lines = [
+    `📋 Figma Diff 报告  ${headerLine}`,
+    `═══════════════════════════════`,
+    `视图：${item.className ?? "Unknown"}  #${item.oid ?? "?"}`,
+    `Figma 节点：${(figmaNode["name"] as string) ?? "(未知)"}  [${(figmaNode["type"] as string) ?? ""}]`,
+    `容差：±${tolerance}`,
+    ``,
+    `结果：✅ ${passCount} 匹配  ⚠️ ${warnCount} 偏差  ❌ ${failCount} 不匹配  ➖ ${onlyFigma} 仅 Figma`,
+    `───────────────────────────────`,
+    ...diffs.map((d) => `${d.status}  ${d.label.padEnd(22)} ${d.detail}`),
+  ];
+
+  if (failCount > 0 || warnCount > 0) {
+    lines.push(``, `💡 修复建议：`);
+    for (const d of diffs) {
+      if (d.status === "❌") {
+        lines.push(`  • ${d.label}：${d.detail.split("\n")[0]}`);
+      }
+    }
   }
 
   return lines.join("\n");

@@ -155,14 +155,33 @@ static const uint16_t kMCPBridgePort = 9877;
 #pragma mark - Request Handling
 
 - (void)handleClientSocket:(int)clientFd {
-    // 读取请求（最多 64KB）
+    // 循环读取直到收到完整 HTTP header（以 \r\n\r\n 结尾）或超过 64KB 限制
+    // 单次 recv 不保证读完所有 TCP 数据，必须循环
     char buffer[65536];
-    ssize_t bytesRead = recv(clientFd, buffer, sizeof(buffer) - 1, 0);
-    if (bytesRead <= 0) {
+    size_t totalRead = 0;
+    BOOL headerComplete = NO;
+
+    while (totalRead < sizeof(buffer) - 1) {
+        ssize_t n = recv(clientFd, buffer + totalRead, sizeof(buffer) - 1 - totalRead, 0);
+        if (n < 0) {
+            if (errno == EINTR) { continue; } // 被信号中断，重试
+            break; // 真实错误
+        }
+        if (n == 0) { break; } // 连接关闭
+        totalRead += n;
+        buffer[totalRead] = '\0';
+        // 检测 HTTP header 是否已完整（以 \r\n\r\n 结尾）
+        if (memmem(buffer, totalRead, "\r\n\r\n", 4) != NULL) {
+            headerComplete = YES;
+            break;
+        }
+    }
+
+    if (totalRead == 0) {
         close(clientFd);
         return;
     }
-    buffer[bytesRead] = '\0';
+    buffer[totalRead] = '\0';
     NSString *requestStr = [NSString stringWithUTF8String:buffer];
     if (!requestStr) {
         [self sendResponse:clientFd status:400 body:[@"{\"error\":\"bad request\"}" dataUsingEncoding:NSUTF8StringEncoding]];
@@ -399,6 +418,197 @@ static const uint16_t kMCPBridgePort = 9877;
         };
     }
 
+    // ── Figma 对比所需扩展属性 ─────────────────────────────────────────────
+
+    // backgroundColor（来自 LookinDisplayItem.backgroundColor，类型为 LookinColor/UIColor）
+    NSObject *bgColorObj = [self kvcObject:item key:@"backgroundColor"];
+    if (bgColorObj) {
+        NSDictionary *colorDict = [self serializeColor:bgColorObj];
+        if (colorDict) { dict[@"backgroundColor"] = colorDict; }
+    }
+
+    // 从 attributesGroupList 中提取详细属性
+    NSArray *attrGroupList = [self kvcArray:item key:@"attributesGroupList"];
+    if (attrGroupList.count > 0) {
+        NSMutableDictionary *layerAttrs = [NSMutableDictionary dictionary];
+        NSMutableDictionary *labelAttrs = [NSMutableDictionary dictionary];
+        NSMutableDictionary *stackAttrs = [NSMutableDictionary dictionary];
+
+        for (NSObject *group in attrGroupList) {
+            NSArray *sections = [self kvcArray:group key:@"sections"];
+            for (NSObject *section in sections) {
+                NSString *sectionId = [self kvcString:section key:@"identifier"];
+                NSArray *attrs = [self kvcArray:section key:@"attributes"];
+
+                // ViewLayer - cornerRadius
+                if ([sectionId hasSuffix:@"Corner"]) {
+                    for (NSObject *attr in attrs) {
+                        id value = [self kvcObject:attr key:@"value"];
+                        if ([value isKindOfClass:[NSNumber class]]) {
+                            layerAttrs[@"cornerRadius"] = value; break;
+                        }
+                    }
+                }
+                // ViewLayer - border
+                else if ([sectionId hasSuffix:@"Border"]) {
+                    for (NSObject *attr in attrs) {
+                        NSString *attrId = [self kvcString:attr key:@"identifier"];
+                        id value = [self kvcObject:attr key:@"value"];
+                        if (!value) continue;
+                        if ([attrId hasSuffix:@"Width"] && [value isKindOfClass:[NSNumber class]]) {
+                            layerAttrs[@"borderWidth"] = value;
+                        } else if ([attrId hasSuffix:@"Color"]) {
+                            NSDictionary *c = [self serializeColor:value];
+                            if (c) { layerAttrs[@"borderColor"] = c; }
+                        }
+                    }
+                }
+                // ViewLayer - shadow
+                else if ([sectionId hasSuffix:@"Shadow"]) {
+                    for (NSObject *attr in attrs) {
+                        NSString *attrId = [self kvcString:attr key:@"identifier"];
+                        id value = [self kvcObject:attr key:@"value"];
+                        if (!value || ![value isKindOfClass:[NSNumber class]]) {
+                            // 颜色单独走序列化
+                            if ([attrId hasSuffix:@"Color"]) {
+                                NSDictionary *c = [self serializeColor:value];
+                                if (c) { layerAttrs[@"shadowColor"] = c; }
+                            }
+                            continue;
+                        }
+                        if ([attrId hasSuffix:@"Opacity"]) {
+                            layerAttrs[@"shadowOpacity"] = value;
+                        } else if ([attrId hasSuffix:@"Radius"]) {
+                            layerAttrs[@"shadowRadius"] = value;
+                        } else if ([attrId hasSuffix:@"OffsetW"]) {
+                            layerAttrs[@"shadowOffsetWidth"] = value;
+                        } else if ([attrId hasSuffix:@"OffsetH"]) {
+                            layerAttrs[@"shadowOffsetHeight"] = value;
+                        }
+                    }
+                }
+                // UILabel - text
+                else if ([sectionId hasSuffix:@"UILabel_Text"]) {
+                    for (NSObject *attr in attrs) {
+                        id value = [self kvcObject:attr key:@"value"];
+                        if (value && [value isKindOfClass:[NSString class]]) {
+                            labelAttrs[@"text"] = value;
+                        }
+                    }
+                }
+                // UILabel - font
+                else if ([sectionId hasSuffix:@"UILabel_Font"]) {
+                    for (NSObject *attr in attrs) {
+                        NSString *attrId = [self kvcString:attr key:@"identifier"];
+                        id value = [self kvcObject:attr key:@"value"];
+                        if (!value) continue;
+                        if ([attrId hasSuffix:@"Name"] && [value isKindOfClass:[NSString class]]) {
+                            labelAttrs[@"fontName"] = value;
+                        } else if ([attrId hasSuffix:@"Size"] && [value isKindOfClass:[NSNumber class]]) {
+                            labelAttrs[@"fontSize"] = value;
+                        }
+                    }
+                }
+                // UILabel - textColor
+                else if ([sectionId hasSuffix:@"UILabel_TextColor"]) {
+                    for (NSObject *attr in attrs) {
+                        id value = [self kvcObject:attr key:@"value"];
+                        if (value) {
+                            NSDictionary *c = [self serializeColor:value];
+                            if (c) { labelAttrs[@"textColor"] = c; }
+                        }
+                    }
+                }
+                // UILabel - numberOfLines
+                else if ([sectionId hasSuffix:@"NumberOfLines"]) {
+                    for (NSObject *attr in attrs) {
+                        id value = [self kvcObject:attr key:@"value"];
+                        if ([value isKindOfClass:[NSNumber class]]) {
+                            labelAttrs[@"numberOfLines"] = value; break;
+                        }
+                    }
+                }
+                // UILabel - alignment
+                else if ([sectionId hasSuffix:@"UILabel_Alignment"]) {
+                    for (NSObject *attr in attrs) {
+                        id value = [self kvcObject:attr key:@"value"];
+                        if ([value isKindOfClass:[NSNumber class]]) {
+                            labelAttrs[@"textAlignment"] = value; break;
+                        }
+                    }
+                }
+                // UIStackView - axis
+                else if ([sectionId hasSuffix:@"UIStackView_Axis"]) {
+                    for (NSObject *attr in attrs) {
+                        id value = [self kvcObject:attr key:@"value"];
+                        if ([value isKindOfClass:[NSNumber class]]) {
+                            // axis: 0=horizontal, 1=vertical
+                            stackAttrs[@"axis"] = ([value intValue] == 1) ? @"vertical" : @"horizontal";
+                            break;
+                        }
+                    }
+                }
+                // UIStackView - spacing
+                else if ([sectionId hasSuffix:@"UIStackView_Spacing"]) {
+                    for (NSObject *attr in attrs) {
+                        id value = [self kvcObject:attr key:@"value"];
+                        if ([value isKindOfClass:[NSNumber class]]) {
+                            stackAttrs[@"spacing"] = value; break;
+                        }
+                    }
+                }
+                // UIStackView - alignment
+                else if ([sectionId hasSuffix:@"UIStackView_Alignment"]) {
+                    for (NSObject *attr in attrs) {
+                        id value = [self kvcObject:attr key:@"value"];
+                        if ([value isKindOfClass:[NSNumber class]]) {
+                            stackAttrs[@"stackAlignment"] = value; break;
+                        }
+                    }
+                }
+                // UITextField / UITextView - text（合并处理，与 UILabel 相同结构）
+                else if ([sectionId hasSuffix:@"UITextField_Text"] ||
+                         [sectionId hasSuffix:@"UITextView_Text"]) {
+                    for (NSObject *attr in attrs) {
+                        id value = [self kvcObject:attr key:@"value"];
+                        if ([value isKindOfClass:[NSString class]]) {
+                            labelAttrs[@"text"] = value; break;
+                        }
+                    }
+                }
+                // UITextField / UITextView - font（合并处理）
+                else if ([sectionId hasSuffix:@"UITextField_Font"] ||
+                         [sectionId hasSuffix:@"UITextView_Font"]) {
+                    for (NSObject *attr in attrs) {
+                        NSString *attrId = [self kvcString:attr key:@"identifier"];
+                        id value = [self kvcObject:attr key:@"value"];
+                        if (!value) continue;
+                        if ([attrId hasSuffix:@"Name"] && [value isKindOfClass:[NSString class]]) {
+                            labelAttrs[@"fontName"] = value;
+                        } else if ([attrId hasSuffix:@"Size"] && [value isKindOfClass:[NSNumber class]]) {
+                            labelAttrs[@"fontSize"] = value;
+                        }
+                    }
+                }
+                // UITextField / UITextView - textColor（合并处理）
+                else if ([sectionId hasSuffix:@"UITextField_TextColor"] ||
+                         [sectionId hasSuffix:@"UITextView_TextColor"]) {
+                    for (NSObject *attr in attrs) {
+                        id value = [self kvcObject:attr key:@"value"];
+                        if (value) {
+                            NSDictionary *c = [self serializeColor:value];
+                            if (c) { labelAttrs[@"textColor"] = c; break; }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (layerAttrs.count > 0) { [dict addEntriesFromDictionary:layerAttrs]; }
+        if (labelAttrs.count > 0) { dict[@"label"] = labelAttrs; }
+        if (stackAttrs.count > 0) { dict[@"stackView"] = stackAttrs; }
+    }
+
     // customInfo（自定义节点：不对应真实 View，但有业务语义）
     NSObject *customInfo = [self kvcObject:item key:@"customInfo"];
     if (customInfo) {
@@ -430,6 +640,74 @@ static const uint16_t kMCPBridgePort = 9877;
     }
 
     return dict;
+}
+
+/// 将 UIColor / LookinColor / CGColorRef 对象序列化为 {r, g, b, a} 字典
+/// 返回 nil 表示无法解析
++ (nullable NSDictionary *)serializeColor:(id)colorObj {
+    if (!colorObj || colorObj == [NSNull null]) { return nil; }
+
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    BOOL success = NO;
+
+    // ① CGColorRef 桥接类型（CALayer.borderColor / shadowColor 的实际类型）
+    // 必须放在 UIColor 之前检测，因为 UIColor 也可通过 CGColor 降级
+    @try {
+        CFTypeRef cfRef = (__bridge CFTypeRef)colorObj;
+        if (cfRef && CGColorGetTypeID() == CFGetTypeID(cfRef)) {
+            CGColorRef cgColor = (CGColorRef)cfRef;
+            const CGFloat *comps = CGColorGetComponents(cgColor);
+            size_t numComps = CGColorGetNumberOfComponents(cgColor);
+            if (comps && numComps >= 3) {
+                r = comps[0]; g = comps[1]; b = comps[2];
+                a = (numComps >= 4) ? comps[3] : 1.0;
+                success = YES;
+            } else if (comps && numComps == 2) {
+                // 灰度色空间：comp[0]=white, comp[1]=alpha
+                r = g = b = comps[0]; a = comps[1]; success = YES;
+            }
+        }
+    } @catch (...) { /* 不是合法的 CGColorRef，继续尝试其他方式 */ }
+
+    // ② UIColor（iOS）
+    if (!success && [colorObj isKindOfClass:[UIColor class]]) {
+        success = [((UIColor *)colorObj) getRed:&r green:&g blue:&b alpha:&a];
+        if (!success) {
+            // 可能是灰度色空间
+            CGFloat white = 0;
+            success = [((UIColor *)colorObj) getWhite:&white alpha:&a];
+            if (success) { r = g = b = white; }
+        }
+    }
+    // ③ NSObject with rgba components (LookinColor wrapper or similar)
+    else if (!success && [colorObj respondsToSelector:NSSelectorFromString(@"redComponent")]) {
+        NSNumber *rn = [colorObj valueForKey:@"redComponent"];
+        NSNumber *gn = [colorObj valueForKey:@"greenComponent"];
+        NSNumber *bn = [colorObj valueForKey:@"blueComponent"];
+        NSNumber *an = [colorObj valueForKey:@"alphaComponent"];
+        if (rn && gn && bn && an) {
+            r = rn.doubleValue; g = gn.doubleValue;
+            b = bn.doubleValue; a = an.doubleValue;
+            success = YES;
+        }
+    }
+    // ④ NSObject wrapping a UIColor（如 LookinColor 有 uiColor 属性）
+    else if (!success && [colorObj respondsToSelector:NSSelectorFromString(@"uiColor")]) {
+        UIColor *inner = [colorObj valueForKey:@"uiColor"];
+        if (inner) { return [self serializeColor:inner]; }
+    }
+
+    if (!success) { return nil; }
+
+    // 转为 0-255 整数 + alpha 保留两位小数，便于与 Figma 比较
+    return @{
+        @"r": @((int)round(r * 255)),
+        @"g": @((int)round(g * 255)),
+        @"b": @((int)round(b * 255)),
+        @"a": @(round(a * 100) / 100.0),
+        @"hex": [NSString stringWithFormat:@"#%02X%02X%02X",
+                 (int)round(r * 255), (int)round(g * 255), (int)round(b * 255)]
+    };
 }
 
 #pragma mark - Version Helper

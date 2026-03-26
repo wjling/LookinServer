@@ -16,6 +16,32 @@ export interface ViewFrame {
   height: number;
 }
 
+export interface ColorValue {
+  r: number;   // 0-255
+  g: number;   // 0-255
+  b: number;   // 0-255
+  a: number;   // 0-1
+  hex: string; // "#RRGGBB"
+}
+
+export interface LabelAttrs {
+  text?: string;
+  fontName?: string;
+  fontSize?: number;
+  textColor?: ColorValue;
+  numberOfLines?: number;
+  /** NSTextAlignment 枚举值：0=left 1=center 2=right 3=justified 4=natural */
+  textAlignment?: number;
+}
+
+export interface StackViewAttrs {
+  /** "horizontal" | "vertical" */
+  axis?: string;
+  spacing?: number;
+  /** UIStackView.Alignment 枚举值 */
+  stackAlignment?: number;
+}
+
 export interface DisplayItem {
   className?: string;
   oid?: number;
@@ -24,6 +50,34 @@ export interface DisplayItem {
   frame?: ViewFrame;
   customDisplayTitle?: string;
   hostViewController?: string;
+
+  // ── Figma 对比扩展属性 ──────────────────────────────────────────────────
+
+  /** 背景色（UIView.backgroundColor / CALayer.backgroundColor） */
+  backgroundColor?: ColorValue;
+  /** 圆角（CALayer.cornerRadius） */
+  cornerRadius?: number;
+  /** 描边宽度（CALayer.borderWidth） */
+  borderWidth?: number;
+  /** 描边颜色（CALayer.borderColor） */
+  borderColor?: ColorValue;
+  /** 阴影颜色 */
+  shadowColor?: ColorValue;
+  /** 阴影透明度（0-1） */
+  shadowOpacity?: number;
+  /** 阴影模糊半径 */
+  shadowRadius?: number;
+  /** 阴影偏移 X */
+  shadowOffsetWidth?: number;
+  /** 阴影偏移 Y */
+  shadowOffsetHeight?: number;
+  /** UILabel / UITextField / UITextView 相关属性 */
+  label?: LabelAttrs;
+  /** UIStackView 相关属性 */
+  stackView?: StackViewAttrs;
+
+  // ── UserCustom 节点 ────────────────────────────────────────────────────
+
   /** 该节点为开发者通过 Lookin UserCustom API 注册的业务语义节点，不对应真实 View */
   isCustom?: boolean;
   /** isCustom 节点的业务标题（如"购物车列表容器"） */

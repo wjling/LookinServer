@@ -205,6 +205,39 @@ static const uint16_t kMCPBridgePort = 9877;
     // 去掉 query string
     NSString *fullPath = parts[1];
     NSString *path = [fullPath componentsSeparatedByString:@"?"].firstObject ?: fullPath;
+    
+    // 解析 HTTP body（用于 POST 请求）
+    NSData *httpBody = nil;
+    if ([method isEqualToString:@"POST"]) {
+        // 查找 Content-Length
+        NSInteger contentLength = 0;
+        for (NSString *line in lines) {
+            if ([line.lowercaseString hasPrefix:@"content-length:"]) {
+                NSString *lengthStr = [[line substringFromIndex:15] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                contentLength = [lengthStr integerValue];
+                break;
+            }
+        }
+        
+        // 查找 header 结束位置（\r\n\r\n）
+        NSRange headerEndRange = [requestStr rangeOfString:@"\r\n\r\n"];
+        if (headerEndRange.location != NSNotFound && contentLength > 0) {
+            NSUInteger bodyStartInBuffer = headerEndRange.location + 4;
+            NSUInteger bodyAlreadyRead = totalRead - bodyStartInBuffer;
+            
+            // 已读取的 body 部分
+            NSMutableData *bodyData = [NSMutableData dataWithBytes:buffer + bodyStartInBuffer length:bodyAlreadyRead];
+            
+            // 如果还有剩余 body 需要读取
+            while ((NSInteger)bodyData.length < contentLength) {
+                char bodyBuffer[4096];
+                ssize_t n = recv(clientFd, bodyBuffer, MIN(sizeof(bodyBuffer), contentLength - bodyData.length), 0);
+                if (n <= 0) break;
+                [bodyData appendBytes:bodyBuffer length:n];
+            }
+            httpBody = bodyData;
+        }
+    }
 
     if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/ping"]) {
         [self handlePing:clientFd];

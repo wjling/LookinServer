@@ -10,6 +10,7 @@
 #if TARGET_OS_IOS || TARGET_OS_TV || TARGET_OS_VISION
 
 #import <UIKit/UIKit.h>
+#import "NSObject+LookinServer.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -211,6 +212,8 @@ static const uint16_t kMCPBridgePort = 9877;
         [self handleHierarchy:clientFd];
     } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/refresh"]) {
         [self handleRefresh:clientFd];
+    } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/modify"]) {
+        [self handleModify:clientFd httpBody:httpBody];
     } else {
         [self sendResponse:clientFd status:404 body:[@"{\"error\":\"not found\"}" dataUsingEncoding:NSUTF8StringEncoding]];
     }
@@ -767,6 +770,232 @@ static const uint16_t kMCPBridgePort = 9877;
     if (![obj respondsToSelector:NSSelectorFromString(key)]) { return nil; }
     id value = [obj valueForKey:key];
     return [value isKindOfClass:[NSArray class]] ? value : nil;
+}
+
+#pragma mark - Modify View
+
+- (void)handleModify:(int)clientFd httpBody:(NSData *)httpBody {
+    if (!httpBody || httpBody.length == 0) {
+        NSString *msg = @"{\"success\":false,\"error\":\"Missing request body\"}";
+        [self sendResponse:clientFd status:400 body:[msg dataUsingEncoding:NSUTF8StringEncoding]];
+        return;
+    }
+    
+    NSError *parseError = nil;
+    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:httpBody options:0 error:&parseError];
+    if (!json || ![json isKindOfClass:[NSDictionary class]]) {
+        NSString *msg = [NSString stringWithFormat:@"{\"success\":false,\"error\":\"Invalid JSON: %@\"}", parseError.localizedDescription ?: @"parse failed"];
+        [self sendResponse:clientFd status:400 body:[msg dataUsingEncoding:NSUTF8StringEncoding]];
+        return;
+    }
+    
+    NSNumber *oidNum = json[@"oid"];
+    NSDictionary *modifications = json[@"modifications"];
+    
+    if (!oidNum || !modifications || ![modifications isKindOfClass:[NSDictionary class]]) {
+        NSString *msg = @"{\"success\":false,\"error\":\"Missing required fields: oid, modifications\"}";
+        [self sendResponse:clientFd status:400 body:[msg dataUsingEncoding:NSUTF8StringEncoding]];
+        return;
+    }
+    
+    unsigned long oid = [oidNum unsignedLongValue];
+    
+    // 主线程执行修改
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    __block NSDictionary *result = nil;
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        result = [self applyModifications:modifications toObjectWithOid:oid];
+        dispatch_semaphore_signal(sema);
+    });
+    
+    dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+    
+    if (result) {
+        NSData *body = [NSJSONSerialization dataWithJSONObject:result options:0 error:nil];
+        [self sendResponse:clientFd status:200 body:body ?: [NSData data]];
+    } else {
+        NSString *msg = @"{\"success\":false,\"error\":\"Timeout or internal error\"}";
+        [self sendResponse:clientFd status:500 body:[msg dataUsingEncoding:NSUTF8StringEncoding]];
+    }
+}
+
+- (NSDictionary *)applyModifications:(NSDictionary *)modifications toObjectWithOid:(unsigned long)oid {
+    NSObject *obj = [NSObject lks_objectWithOid:oid];
+    if (!obj) {
+        return @{@"success": @NO, @"error": [NSString stringWithFormat:@"Object with oid=%lu not found", oid]};
+    }
+    
+    NSMutableArray *modifiedProps = [NSMutableArray array];
+    NSMutableArray *errors = [NSMutableArray array];
+    
+    // 检查是否是 UIView 或 CALayer
+    UIView *view = [obj isKindOfClass:[UIView class]] ? (UIView *)obj : nil;
+    CALayer *layer = view ? view.layer : ([obj isKindOfClass:[CALayer class]] ? (CALayer *)obj : nil);
+    
+    for (NSString *key in modifications) {
+        id value = modifications[key];
+        
+        @try {
+            // Frame 相关
+            if ([key isEqualToString:@"frame"] && view) {
+                NSDictionary *frameDict = value;
+                CGRect frame = view.frame;
+                if (frameDict[@"x"]) frame.origin.x = [frameDict[@"x"] doubleValue];
+                if (frameDict[@"y"]) frame.origin.y = [frameDict[@"y"] doubleValue];
+                if (frameDict[@"width"]) frame.size.width = [frameDict[@"width"] doubleValue];
+                if (frameDict[@"height"]) frame.size.height = [frameDict[@"height"] doubleValue];
+                view.frame = frame;
+                [modifiedProps addObject:key];
+            }
+            else if ([key hasPrefix:@"frame."] && view) {
+                NSString *subKey = [key substringFromIndex:6];
+                CGRect frame = view.frame;
+                CGFloat val = [value doubleValue];
+                if ([subKey isEqualToString:@"x"]) frame.origin.x = val;
+                else if ([subKey isEqualToString:@"y"]) frame.origin.y = val;
+                else if ([subKey isEqualToString:@"width"]) frame.size.width = val;
+                else if ([subKey isEqualToString:@"height"]) frame.size.height = val;
+                view.frame = frame;
+                [modifiedProps addObject:key];
+            }
+            // backgroundColor
+            else if ([key isEqualToString:@"backgroundColor"]) {
+                UIColor *color = [self parseColor:value];
+                if (color && view) {
+                    view.backgroundColor = color;
+                    [modifiedProps addObject:key];
+                } else if (color && layer) {
+                    layer.backgroundColor = color.CGColor;
+                    [modifiedProps addObject:key];
+                }
+            }
+            // cornerRadius
+            else if ([key isEqualToString:@"cornerRadius"] && layer) {
+                layer.cornerRadius = [value doubleValue];
+                [modifiedProps addObject:key];
+            }
+            // borderWidth
+            else if ([key isEqualToString:@"borderWidth"] && layer) {
+                layer.borderWidth = [value doubleValue];
+                [modifiedProps addObject:key];
+            }
+            // borderColor
+            else if ([key isEqualToString:@"borderColor"] && layer) {
+                UIColor *color = [self parseColor:value];
+                if (color) {
+                    layer.borderColor = color.CGColor;
+                    [modifiedProps addObject:key];
+                }
+            }
+            // alpha
+            else if ([key isEqualToString:@"alpha"] && view) {
+                view.alpha = [value doubleValue];
+                [modifiedProps addObject:key];
+            }
+            // hidden
+            else if ([key isEqualToString:@"hidden"] && view) {
+                view.hidden = [value boolValue];
+                [modifiedProps addObject:key];
+            }
+            // clipsToBounds
+            else if ([key isEqualToString:@"clipsToBounds"] && view) {
+                view.clipsToBounds = [value boolValue];
+                [modifiedProps addObject:key];
+            }
+            // UILabel specific
+            else if ([key isEqualToString:@"fontSize"] && [view isKindOfClass:[UILabel class]]) {
+                UILabel *label = (UILabel *)view;
+                UIFont *font = label.font;
+                label.font = [font fontWithSize:[value doubleValue]];
+                [modifiedProps addObject:key];
+            }
+            else if ([key isEqualToString:@"textColor"] && [view isKindOfClass:[UILabel class]]) {
+                UILabel *label = (UILabel *)view;
+                UIColor *color = [self parseColor:value];
+                if (color) {
+                    label.textColor = color;
+                    [modifiedProps addObject:key];
+                }
+            }
+            else if ([key isEqualToString:@"textAlignment"] && [view isKindOfClass:[UILabel class]]) {
+                UILabel *label = (UILabel *)view;
+                label.textAlignment = (NSTextAlignment)[value integerValue];
+                [modifiedProps addObject:key];
+            }
+            else if ([key isEqualToString:@"numberOfLines"] && [view isKindOfClass:[UILabel class]]) {
+                UILabel *label = (UILabel *)view;
+                label.numberOfLines = [value integerValue];
+                [modifiedProps addObject:key];
+            }
+            else if ([key isEqualToString:@"text"] && [view isKindOfClass:[UILabel class]]) {
+                UILabel *label = (UILabel *)view;
+                label.text = [value isKindOfClass:[NSString class]] ? value : [value description];
+                [modifiedProps addObject:key];
+            }
+            // UIStackView specific
+            else if ([key isEqualToString:@"spacing"] && [view isKindOfClass:[UIStackView class]]) {
+                UIStackView *stack = (UIStackView *)view;
+                stack.spacing = [value doubleValue];
+                [modifiedProps addObject:key];
+            }
+            else if ([key isEqualToString:@"axis"] && [view isKindOfClass:[UIStackView class]]) {
+                UIStackView *stack = (UIStackView *)view;
+                // 0 = horizontal, 1 = vertical
+                stack.axis = [value integerValue];
+                [modifiedProps addObject:key];
+            }
+            else {
+                [errors addObject:[NSString stringWithFormat:@"Unknown or unsupported property: %@", key]];
+            }
+        } @catch (NSException *e) {
+            [errors addObject:[NSString stringWithFormat:@"Error setting %@: %@", key, e.reason]];
+        }
+    }
+    
+    NSMutableDictionary *response = [@{
+        @"success": @(errors.count == 0 || modifiedProps.count > 0),
+        @"oid": @(oid),
+        @"modifiedProps": modifiedProps
+    } mutableCopy];
+    
+    if (errors.count > 0) {
+        response[@"errors"] = errors;
+    }
+    
+    return response;
+}
+
+- (UIColor *)parseColor:(id)value {
+    if ([value isKindOfClass:[NSString class]]) {
+        NSString *str = value;
+        // #RRGGBB or #RRGGBBAA
+        if ([str hasPrefix:@"#"]) {
+            NSString *hex = [str substringFromIndex:1];
+            unsigned int hexValue = 0;
+            [[NSScanner scannerWithString:hex] scanHexInt:&hexValue];
+            
+            if (hex.length == 6) {
+                return [UIColor colorWithRed:((hexValue >> 16) & 0xFF) / 255.0
+                                       green:((hexValue >> 8) & 0xFF) / 255.0
+                                        blue:(hexValue & 0xFF) / 255.0
+                                       alpha:1.0];
+            } else if (hex.length == 8) {
+                return [UIColor colorWithRed:((hexValue >> 24) & 0xFF) / 255.0
+                                       green:((hexValue >> 16) & 0xFF) / 255.0
+                                        blue:((hexValue >> 8) & 0xFF) / 255.0
+                                       alpha:(hexValue & 0xFF) / 255.0];
+            }
+        }
+    } else if ([value isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *dict = value;
+        CGFloat r = [dict[@"r"] doubleValue] / 255.0;
+        CGFloat g = [dict[@"g"] doubleValue] / 255.0;
+        CGFloat b = [dict[@"b"] doubleValue] / 255.0;
+        CGFloat a = dict[@"a"] ? [dict[@"a"] doubleValue] : 1.0;
+        return [UIColor colorWithRed:r green:g blue:b alpha:a];
+    }
+    return nil;
 }
 
 @end

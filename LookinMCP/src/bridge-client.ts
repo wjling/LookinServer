@@ -231,4 +231,97 @@ export class LookinBridgeClient {
       req.end();
     });
   }
+
+  /** POST 请求，带 JSON body */
+  private requestWithBody(
+    method: string,
+    path: string,
+    body: Record<string, unknown>
+  ): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const bodyStr = JSON.stringify(body);
+      const options: http.RequestOptions = {
+        hostname: this.host,
+        port: this.port,
+        path,
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(bodyStr),
+        },
+        timeout: this.timeoutMs,
+      };
+
+      const req = http.request(options, (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          try {
+            const json = JSON.parse(data);
+            if (res.statusCode && res.statusCode >= 400) {
+              reject(
+                new Error(
+                  `LookinBridge error ${res.statusCode}: ${json.error ?? data}`
+                )
+              );
+            } else {
+              resolve(json);
+            }
+          } catch {
+            reject(new Error(`Failed to parse response: ${data}`));
+          }
+        });
+      });
+
+      req.on("timeout", () => {
+        req.destroy();
+        reject(
+          new Error(
+            `Connection to iOS app timed out (${this.timeoutMs}ms). ` +
+              `Make sure the iOS app is running.`
+          )
+        );
+      });
+
+      req.on("error", (err: NodeJS.ErrnoException) => {
+        if (err.code === "ECONNREFUSED") {
+          reject(
+            new Error(
+              `Cannot connect to iOS app on ${this.host}:${this.port}. ` +
+                `Make sure the iOS app is running with LookinServer integrated.`
+            )
+          );
+        } else {
+          reject(err);
+        }
+      });
+
+      req.write(bodyStr);
+      req.end();
+    });
+  }
+
+  /** 修改视图属性 */
+  async modifyView(
+    oid: number,
+    modifications: Record<string, unknown>
+  ): Promise<{
+    success: boolean;
+    oid: number;
+    modifiedProps: string[];
+    errors?: string[];
+    error?: string;
+  }> {
+    const res = await this.requestWithBody("POST", "/modify", {
+      oid,
+      modifications,
+    });
+    return res as {
+      success: boolean;
+      oid: number;
+      modifiedProps: string[];
+      errors?: string[];
+      error?: string;
+    };
+  }
 }

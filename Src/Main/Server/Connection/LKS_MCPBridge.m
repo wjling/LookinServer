@@ -1029,7 +1029,7 @@ static const uint16_t kMCPBridgePort = 9877;
             labelAttrs[@"fontSize"] = @(label.font.pointSize);
             // 从 UIFontDescriptor 获取精确字重（替换 fontName 字符串推断）
             UIFontDescriptor *desc = label.font.fontDescriptor;
-            NSDictionary *traits = [desc objectForKey:UIFontDescriptorTraitsKey];
+            NSDictionary *traits = [desc objectForKey:UIFontDescriptorTraitsAttribute];
             if (traits && [traits isKindOfClass:[NSDictionary class]]) {
                 NSNumber *weightTrait = traits[UIFontWeightTrait];
                 if (weightTrait && [weightTrait isKindOfClass:[NSNumber class]]) {

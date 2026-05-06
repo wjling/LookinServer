@@ -1182,8 +1182,16 @@ static const uint16_t kMCPBridgePort = 9877;
             gradientDict[@"startPoint"] = @{ @"x": @(gradient.startPoint.x), @"y": @(gradient.startPoint.y) };
             gradientDict[@"endPoint"] = @{ @"x": @(gradient.endPoint.x), @"y": @(gradient.endPoint.y) };
             
-            // 类型
-            gradientDict[@"type"] = [gradient isKindOfClass:[CAGradientLayer class]] ? @"axial" : @"unknown";
+            // 类型（CAGradientLayer.type: "axial"=线性, "radial"=径向, "conic"=锥形）
+            NSString *gradientType = @"axial";
+            if (@available(iOS 13.0, *)) {
+                if (gradient.type == kCAGradientLayerRadial) {
+                    gradientType = @"radial";
+                } else if (gradient.type == kCAGradientLayerConic) {
+                    gradientType = @"conic";
+                }
+            }
+            gradientDict[@"type"] = gradientType;
             
             result[@"gradient"] = gradientDict;
             break; // 通常只有一个渐变层

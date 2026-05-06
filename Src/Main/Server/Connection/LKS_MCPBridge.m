@@ -11,6 +11,10 @@
 
 #import <UIKit/UIKit.h>
 #import "NSObject+LookinServer.h"
+#import "LKS_AttrGroupsMaker.h"
+#import "LookinAttributesGroup.h"
+#import "LookinAttributesSection.h"
+#import "LookinAttribute.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -247,6 +251,8 @@ static const uint16_t kMCPBridgePort = 9877;
         [self handleRefresh:clientFd];
     } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/modify"]) {
         [self handleModify:clientFd httpBody:httpBody];
+    } else if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/view_attrs"]) {
+        [self handleViewAttrs:clientFd httpBody:httpBody];
     } else {
         [self sendResponse:clientFd status:404 body:[@"{\"error\":\"not found\"}" dataUsingEncoding:NSUTF8StringEncoding]];
     }
@@ -353,6 +359,7 @@ static const uint16_t kMCPBridgePort = 9877;
 #pragma mark - Hierarchy Serialization
 
 /// 从主线程实时生成 hierarchy（无需 Lookin Mac 已连接）
+/// 保持轻量：不包含 attributesGroupList，详细属性通过 /view_attrs 接口按需获取
 + (nullable NSData *)generateFreshHierarchy {
     Class hierarchyClass = NSClassFromString(@"LookinHierarchyInfo");
     if (!hierarchyClass) { return nil; }
@@ -523,6 +530,39 @@ static const uint16_t kMCPBridgePort = 9877;
                         }
                     }
                 }
+                // ── P0 核心属性（高效版本）──
+                else if ([sectionId hasSuffix:@"ContentMode"]) {
+                    for (NSObject *attr in attrs) {
+                        id value = [self kvcObject:attr key:@"value"];
+                        if ([value isKindOfClass:[NSNumber class]]) {
+                            layerAttrs[@"contentMode"] = value;
+                            break;
+                        }
+                    }
+                }
+                else if ([sectionId isEqualToString:@"v_i"]) {  // InterationAndMasks 的简写标识符
+                    for (NSObject *attr in attrs) {
+                        NSString *attrId = [self kvcString:attr key:@"identifier"];
+                        if ([attrId hasSuffix:@"MasksToBounds"]) {
+                            id value = [self kvcObject:attr key:@"value"];
+                            if ([value isKindOfClass:[NSNumber class]]) {
+                                BOOL boolValue = [value boolValue];
+                                layerAttrs[@"masksToBounds"] = @(boolValue);
+                                layerAttrs[@"clipsToBounds"] = @(boolValue);
+                                break;
+                            }
+                        }
+                    }
+                }
+                else if ([sectionId hasSuffix:@"TintColor"]) {
+                    for (NSObject *attr in attrs) {
+                        id value = [self kvcObject:attr key:@"value"];
+                        if (value) {
+                            NSDictionary *c = [self serializeColor:value];
+                            if (c) { layerAttrs[@"tintColor"] = c; break; }
+                        }
+                    }
+                }
                 // UILabel - text
                 else if ([sectionId hasSuffix:@"UILabel_Text"]) {
                     for (NSObject *attr in attrs) {
@@ -540,6 +580,23 @@ static const uint16_t kMCPBridgePort = 9877;
                         if (!value) continue;
                         if ([attrId hasSuffix:@"Name"] && [value isKindOfClass:[NSString class]]) {
                             labelAttrs[@"fontName"] = value;
+                            // 从字体名称推断 fontWeight
+                            NSString *fontName = (NSString *)value;
+                            if ([fontName containsString:@"Bold"]) {
+                                labelAttrs[@"fontWeight"] = @700;
+                            } else if ([fontName containsString:@"Semibold"] || [fontName containsString:@"SemiBold"]) {
+                                labelAttrs[@"fontWeight"] = @600;
+                            } else if ([fontName containsString:@"Medium"]) {
+                                labelAttrs[@"fontWeight"] = @500;
+                            } else if ([fontName containsString:@"Light"]) {
+                                labelAttrs[@"fontWeight"] = @300;
+                            } else if ([fontName containsString:@"Thin"]) {
+                                labelAttrs[@"fontWeight"] = @100;
+                            } else if ([fontName containsString:@"Regular"] || [fontName containsString:@"Normal"]) {
+                                labelAttrs[@"fontWeight"] = @400;
+                            } else {
+                                labelAttrs[@"fontWeight"] = @400; // 默认 Regular
+                            }
                         } else if ([attrId hasSuffix:@"Size"] && [value isKindOfClass:[NSNumber class]]) {
                             labelAttrs[@"fontSize"] = value;
                         }
@@ -570,6 +627,15 @@ static const uint16_t kMCPBridgePort = 9877;
                         id value = [self kvcObject:attr key:@"value"];
                         if ([value isKindOfClass:[NSNumber class]]) {
                             labelAttrs[@"textAlignment"] = value; break;
+                        }
+                    }
+                }
+                // UILabel - lineBreakMode
+                else if ([sectionId hasSuffix:@"BreakMode"]) {
+                    for (NSObject *attr in attrs) {
+                        id value = [self kvcObject:attr key:@"value"];
+                        if ([value isKindOfClass:[NSNumber class]]) {
+                            labelAttrs[@"lineBreakMode"] = value; break;
                         }
                     }
                 }
@@ -621,6 +687,23 @@ static const uint16_t kMCPBridgePort = 9877;
                         if (!value) continue;
                         if ([attrId hasSuffix:@"Name"] && [value isKindOfClass:[NSString class]]) {
                             labelAttrs[@"fontName"] = value;
+                            // 从字体名称推断 fontWeight
+                            NSString *fontName = (NSString *)value;
+                            if ([fontName containsString:@"Bold"]) {
+                                labelAttrs[@"fontWeight"] = @700;
+                            } else if ([fontName containsString:@"Semibold"] || [fontName containsString:@"SemiBold"]) {
+                                labelAttrs[@"fontWeight"] = @600;
+                            } else if ([fontName containsString:@"Medium"]) {
+                                labelAttrs[@"fontWeight"] = @500;
+                            } else if ([fontName containsString:@"Light"]) {
+                                labelAttrs[@"fontWeight"] = @300;
+                            } else if ([fontName containsString:@"Thin"]) {
+                                labelAttrs[@"fontWeight"] = @100;
+                            } else if ([fontName containsString:@"Regular"] || [fontName containsString:@"Normal"]) {
+                                labelAttrs[@"fontWeight"] = @400;
+                            } else {
+                                labelAttrs[@"fontWeight"] = @400; // 默认 Regular
+                            }
                         } else if ([attrId hasSuffix:@"Size"] && [value isKindOfClass:[NSNumber class]]) {
                             labelAttrs[@"fontSize"] = value;
                         }
@@ -634,6 +717,21 @@ static const uint16_t kMCPBridgePort = 9877;
                         if (value) {
                             NSDictionary *c = [self serializeColor:value];
                             if (c) { labelAttrs[@"textColor"] = c; break; }
+                        }
+                    }
+                }
+                // UIButton - contentEdgeInsets（按需创建字典，内联序列化）
+                else if ([sectionId hasSuffix:@"UIButton_ContentInsets"]) {
+                    for (NSObject *attr in attrs) {
+                        NSValue *value = [self kvcValue:attr key:@"value"];
+                        if (value && [value isKindOfClass:[NSValue class]]) {
+                            UIEdgeInsets insets = value.UIEdgeInsetsValue;
+                            if (!dict[@"button"]) dict[@"button"] = [NSMutableDictionary new];
+                            dict[@"button"][@"contentInsets"] = @{
+                                @"top": @(insets.top), @"left": @(insets.left),
+                                @"bottom": @(insets.bottom), @"right": @(insets.right)
+                            };
+                            break;
                         }
                     }
                 }
@@ -803,6 +901,343 @@ static const uint16_t kMCPBridgePort = 9877;
     if (![obj respondsToSelector:NSSelectorFromString(key)]) { return nil; }
     id value = [obj valueForKey:key];
     return [value isKindOfClass:[NSArray class]] ? value : nil;
+}
+
+#pragma mark - View Attrs (按需获取单个视图的详细属性)
+
+- (void)handleViewAttrs:(int)clientFd httpBody:(NSData *)httpBody {
+    if (!httpBody || httpBody.length == 0) {
+        NSString *msg = @"{\"error\":\"Missing request body\"}";
+        [self sendResponse:clientFd status:400 body:[msg dataUsingEncoding:NSUTF8StringEncoding]];
+        return;
+    }
+    
+    NSError *parseError = nil;
+    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:httpBody options:0 error:&parseError];
+    if (!json || ![json isKindOfClass:[NSDictionary class]]) {
+        NSString *msg = [NSString stringWithFormat:@"{\"error\":\"Invalid JSON: %@\"}", parseError.localizedDescription ?: @"parse failed"];
+        [self sendResponse:clientFd status:400 body:[msg dataUsingEncoding:NSUTF8StringEncoding]];
+        return;
+    }
+    
+    NSNumber *oidNum = json[@"oid"];
+    if (!oidNum) {
+        NSString *msg = @"{\"error\":\"Missing required field: oid\"}";
+        [self sendResponse:clientFd status:400 body:[msg dataUsingEncoding:NSUTF8StringEncoding]];
+        return;
+    }
+    
+    unsigned long oid = [oidNum unsignedLongValue];
+    
+    // 主线程执行属性获取
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    __block NSDictionary *result = nil;
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        result = [LKS_MCPBridge getViewAttrsForOid:oid];
+        dispatch_semaphore_signal(sema);
+    });
+    
+    dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+    
+    if (result) {
+        NSData *body = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
+        [self sendResponse:clientFd status:200 body:body ?: [NSData data]];
+    } else {
+        NSString *msg = @"{\"error\":\"Timeout or internal error\"}";
+        [self sendResponse:clientFd status:500 body:[msg dataUsingEncoding:NSUTF8StringEncoding]];
+    }
+}
+
+/// 根据 oid 获取视图的详细属性（在主线程执行）
++ (NSDictionary *)getViewAttrsForOid:(unsigned long)oid {
+    NSObject *obj = [NSObject lks_objectWithOid:oid];
+    if (!obj) {
+        return @{@"error": [NSString stringWithFormat:@"Object with oid=%lu not found", oid]};
+    }
+    
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    result[@"oid"] = @(oid);
+    
+    // 获取 UIView 或 CALayer
+    UIView *view = [obj isKindOfClass:[UIView class]] ? (UIView *)obj : nil;
+    CALayer *layer = view ? view.layer : ([obj isKindOfClass:[CALayer class]] ? (CALayer *)obj : nil);
+    
+    if (!layer) {
+        return @{@"error": @"Object is not a UIView or CALayer"};
+    }
+    
+    result[@"className"] = NSStringFromClass([obj class]);
+    
+    // ── 布局属性 ──
+    if (view) {
+        CGRect frame = view.frame;
+        result[@"frame"] = @{
+            @"x": @(frame.origin.x),
+            @"y": @(frame.origin.y),
+            @"width": @(frame.size.width),
+            @"height": @(frame.size.height)
+        };
+        result[@"isHidden"] = @(view.isHidden);
+        result[@"alpha"] = @(view.alpha);
+        result[@"clipsToBounds"] = @(view.clipsToBounds);
+        result[@"contentMode"] = @(view.contentMode);
+        result[@"isOpaque"] = @(view.isOpaque);
+        
+        if (view.backgroundColor) {
+            NSDictionary *bgColor = [self serializeColor:view.backgroundColor];
+            if (bgColor) result[@"backgroundColor"] = bgColor;
+        }
+        if (view.tintColor) {
+            NSDictionary *tintColor = [self serializeColor:view.tintColor];
+            if (tintColor) result[@"tintColor"] = tintColor;
+        }
+    }
+    
+    // ── Layer 属性 ──
+    result[@"cornerRadius"] = @(layer.cornerRadius);
+    result[@"borderWidth"] = @(layer.borderWidth);
+    result[@"masksToBounds"] = @(layer.masksToBounds);
+    
+    if (layer.borderColor) {
+        UIColor *borderUIColor = [UIColor colorWithCGColor:layer.borderColor];
+        NSDictionary *borderColor = [self serializeColor:borderUIColor];
+        if (borderColor) result[@"borderColor"] = borderColor;
+    }
+    
+    // ── 阴影属性 ──
+    result[@"shadowOpacity"] = @(layer.shadowOpacity);
+    if (layer.shadowOpacity > 0) {
+        result[@"shadowRadius"] = @(layer.shadowRadius);
+        result[@"shadowOffsetWidth"] = @(layer.shadowOffset.width);
+        result[@"shadowOffsetHeight"] = @(layer.shadowOffset.height);
+        if (layer.shadowColor) {
+            UIColor *shadowUIColor = [UIColor colorWithCGColor:layer.shadowColor];
+            NSDictionary *shadowColor = [self serializeColor:shadowUIColor];
+            if (shadowColor) result[@"shadowColor"] = shadowColor;
+        }
+    }
+    
+    // ── UILabel 属性 ──
+    if ([view isKindOfClass:[UILabel class]]) {
+        UILabel *label = (UILabel *)view;
+        NSMutableDictionary *labelAttrs = [NSMutableDictionary dictionary];
+        
+        if (label.text) labelAttrs[@"text"] = label.text;
+        if (label.font) {
+            labelAttrs[@"fontName"] = label.font.fontName;
+            labelAttrs[@"fontSize"] = @(label.font.pointSize);
+            // 从 UIFontDescriptor 获取精确字重（替换 fontName 字符串推断）
+            UIFontDescriptor *desc = label.font.fontDescriptor;
+            NSDictionary *traits = [desc objectForKey:UIFontDescriptorTraitsKey];
+            if (traits && [traits isKindOfClass:[NSDictionary class]]) {
+                NSNumber *weightTrait = traits[UIFontWeightTrait];
+                if (weightTrait && [weightTrait isKindOfClass:[NSNumber class]]) {
+                    // UIFontWeightTrait: -1.0(ultraLight) ~ 1.0(black)
+                    // 映射到 CSS weight 100-900
+                    CGFloat w = [weightTrait floatValue];
+                    // 映射公式：ultraLight(-1.0)→100, regular(0.0)→400, black(1.0)→900
+                    NSInteger cssWeight = (NSInteger)round(400 + w * 500);
+                    cssWeight = MAX(100, MIN(900, cssWeight)); // clamp 到 100-900
+                    labelAttrs[@"fontWeight"] = @(cssWeight);
+                    labelAttrs[@"fontWeightTrait"] = weightTrait; // 保留原始值
+                }
+            }
+            // 兜底：如果 UIFontDescriptor 获取失败，回退到 fontName 推断
+            if (!labelAttrs[@"fontWeight"]) {
+                NSString *fontName = label.font.fontName;
+                if ([fontName containsString:@"Bold"]) {
+                    labelAttrs[@"fontWeight"] = @700;
+                } else if ([fontName containsString:@"Semibold"] || [fontName containsString:@"SemiBold"]) {
+                    labelAttrs[@"fontWeight"] = @600;
+                } else if ([fontName containsString:@"Medium"]) {
+                    labelAttrs[@"fontWeight"] = @500;
+                } else if ([fontName containsString:@"Light"]) {
+                    labelAttrs[@"fontWeight"] = @300;
+                } else {
+                    labelAttrs[@"fontWeight"] = @400;
+                }
+            }
+        }
+        if (label.textColor) {
+            NSDictionary *textColor = [self serializeColor:label.textColor];
+            if (textColor) labelAttrs[@"textColor"] = textColor;
+        }
+        labelAttrs[@"textAlignment"] = @(label.textAlignment);
+        labelAttrs[@"numberOfLines"] = @(label.numberOfLines);
+        labelAttrs[@"lineBreakMode"] = @(label.lineBreakMode);
+        
+        // ── 行高 & 字间距（从 attributedText 提取）──
+        if (label.attributedText && label.attributedText.length > 0) {
+            // 行高
+            NSParagraphStyle *para = [label.attributedText attribute:NSParagraphStyleAttributeName atIndex:0 effectiveRange:NULL];
+            if (para) {
+                if (para.minimumLineHeight > 0) {
+                    labelAttrs[@"lineHeight"] = @(para.minimumLineHeight);
+                }
+                if (para.maximumLineHeight > 0 && para.maximumLineHeight != para.minimumLineHeight) {
+                    labelAttrs[@"maxLineHeight"] = @(para.maximumLineHeight);
+                }
+                if (para.lineHeightMultiple > 0) {
+                    labelAttrs[@"lineHeightMultiple"] = @(para.lineHeightMultiple);
+                }
+            }
+            // 字间距
+            NSNumber *kern = [label.attributedText attribute:NSKernAttributeName atIndex:0 effectiveRange:NULL];
+            if (kern) {
+                labelAttrs[@"letterSpacing"] = kern;
+            }
+        }
+        // 无 attributedText 时，返回 font 默认行高作为参考
+        if (!labelAttrs[@"lineHeight"] && label.font) {
+            labelAttrs[@"fontLineHeight"] = @(label.font.lineHeight);
+        }
+        
+        if (labelAttrs.count > 0) result[@"label"] = labelAttrs;
+    }
+    
+    // ── UIButton 属性 ──
+    if ([view isKindOfClass:[UIButton class]]) {
+        UIButton *button = (UIButton *)view;
+        NSMutableDictionary *buttonAttrs = [NSMutableDictionary dictionary];
+        
+        NSString *title = [button titleForState:UIControlStateNormal];
+        if (title) buttonAttrs[@"title"] = title;
+        
+        UIColor *titleColor = [button titleColorForState:UIControlStateNormal];
+        if (titleColor) {
+            NSDictionary *color = [self serializeColor:titleColor];
+            if (color) buttonAttrs[@"titleColor"] = color;
+        }
+        
+        UIEdgeInsets insets = button.contentEdgeInsets;
+        buttonAttrs[@"contentInsets"] = @{
+            @"top": @(insets.top),
+            @"left": @(insets.left),
+            @"bottom": @(insets.bottom),
+            @"right": @(insets.right)
+        };
+        
+        if (buttonAttrs.count > 0) result[@"button"] = buttonAttrs;
+    }
+    
+    // ── UIImageView 属性 ──
+    if ([view isKindOfClass:[UIImageView class]]) {
+        UIImageView *imageView = (UIImageView *)view;
+        NSMutableDictionary *imageAttrs = [NSMutableDictionary dictionary];
+        
+        imageAttrs[@"contentMode"] = @(imageView.contentMode);
+        if (imageView.image) {
+            imageAttrs[@"imageSize"] = @{
+                @"width": @(imageView.image.size.width),
+                @"height": @(imageView.image.size.height)
+            };
+        }
+        
+        if (imageAttrs.count > 0) result[@"imageView"] = imageAttrs;
+    }
+    
+    // ── UIStackView 属性 ──
+    if ([view isKindOfClass:[UIStackView class]]) {
+        UIStackView *stack = (UIStackView *)view;
+        NSMutableDictionary *stackAttrs = [NSMutableDictionary dictionary];
+        
+        stackAttrs[@"axis"] = (stack.axis == UILayoutConstraintAxisVertical) ? @"vertical" : @"horizontal";
+        stackAttrs[@"spacing"] = @(stack.spacing);
+        stackAttrs[@"alignment"] = @(stack.alignment);
+        stackAttrs[@"distribution"] = @(stack.distribution);
+        
+        if (stackAttrs.count > 0) result[@"stackView"] = stackAttrs;
+    }
+    
+    // ── CAGradientLayer 渐变层 ──
+    for (CALayer *sublayer in layer.sublayers) {
+        if ([sublayer isKindOfClass:[CAGradientLayer class]]) {
+            CAGradientLayer *gradient = (CAGradientLayer *)sublayer;
+            NSMutableDictionary *gradientDict = [NSMutableDictionary dictionary];
+            
+            // colors
+            if (gradient.colors) {
+                NSMutableArray *colorsArr = [NSMutableArray array];
+                for (id cgColor in gradient.colors) {
+                    if (CFGetTypeID((__bridge CFTypeRef)cgColor) == CGColorGetTypeID()) {
+                        UIColor *uiColor = [UIColor colorWithCGColor:(__bridge CGColorRef)cgColor];
+                        NSDictionary *colorDict = [self serializeColor:uiColor];
+                        if (colorDict) [colorsArr addObject:colorDict];
+                    }
+                }
+                gradientDict[@"colors"] = colorsArr;
+            }
+            
+            // locations
+            if (gradient.locations) {
+                NSMutableArray *locationsArr = [NSMutableArray array];
+                for (NSNumber *loc in gradient.locations) {
+                    [locationsArr addObject:loc];
+                }
+                gradientDict[@"locations"] = locationsArr;
+            }
+            
+            // startPoint / endPoint (归一化坐标 0-1)
+            gradientDict[@"startPoint"] = @{ @"x": @(gradient.startPoint.x), @"y": @(gradient.startPoint.y) };
+            gradientDict[@"endPoint"] = @{ @"x": @(gradient.endPoint.x), @"y": @(gradient.endPoint.y) };
+            
+            // 类型
+            gradientDict[@"type"] = [gradient isKindOfClass:[CAGradientLayer class]] ? @"axial" : @"unknown";
+            
+            result[@"gradient"] = gradientDict;
+            break; // 通常只有一个渐变层
+        }
+    }
+    
+    // ── Auto Layout 约束间距 ──
+    if (view && view.constraints.count > 0) {
+        NSMutableArray *constraintsArr = [NSMutableArray array];
+        for (NSLayoutConstraint *c in view.constraints) {
+            UIView *first = (UIView *)c.firstItem;
+            UIView *second = (UIView *)c.secondItem;
+            
+            // 只收集涉及当前视图的间距/尺寸约束
+            BOOL involvesSelf = (first == view || second == view);
+            if (!involvesSelf) continue;
+            
+            NSString *type = nil;
+            if (c.firstAttribute == NSLayoutAttributeLeading && c.secondAttribute == NSLayoutAttributeLeading) {
+                type = @"leading";
+            } else if (c.firstAttribute == NSLayoutAttributeTrailing && c.secondAttribute == NSLayoutAttributeTrailing) {
+                type = @"trailing";
+            } else if (c.firstAttribute == NSLayoutAttributeTop && c.secondAttribute == NSLayoutAttributeTop) {
+                type = @"top";
+            } else if (c.firstAttribute == NSLayoutAttributeBottom && c.secondAttribute == NSLayoutAttributeBottom) {
+                type = @"bottom";
+            } else if (c.firstAttribute == NSLayoutAttributeWidth && c.secondAttribute == NSLayoutAttributeNotAnAttribute) {
+                type = @"width";
+            } else if (c.firstAttribute == NSLayoutAttributeHeight && c.secondAttribute == NSLayoutAttributeNotAnAttribute) {
+                type = @"height";
+            } else if (c.firstAttribute == NSLayoutAttributeCenterX && c.secondAttribute == NSLayoutAttributeCenterX) {
+                type = @"centerX";
+            } else if (c.firstAttribute == NSLayoutAttributeCenterY && c.secondAttribute == NSLayoutAttributeCenterY) {
+                type = @"centerY";
+            }
+            
+            if (type) {
+                [constraintsArr addObject:@{
+                    @"type": type,
+                    @"constant": @(c.constant),
+                    @"multiplier": @(c.multiplier),
+                    @"priority": @((float)c.priority),
+                    @"relation": (c.relation == NSLayoutRelationEqual ? @"eq" :
+                                  c.relation == NSLayoutRelationGreaterThanOrEqual ? @"gte" : @"lte"),
+                    @"secondItem": second ? NSStringFromClass([second class]) : @"nil"
+                }];
+            }
+        }
+        if (constraintsArr.count > 0) {
+            result[@"constraints"] = constraintsArr;
+        }
+    }
+    
+    return result;
 }
 
 #pragma mark - Modify View

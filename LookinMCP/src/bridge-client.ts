@@ -24,14 +24,37 @@ export interface ColorValue {
   hex: string; // "#RRGGBB"
 }
 
+export interface EdgeInsets {
+  top: number;
+  left: number;
+  bottom: number;
+  right: number;
+}
+
 export interface LabelAttrs {
   text?: string;
   fontName?: string;
   fontSize?: number;
+  /** 字体粗细：100=Thin 300=Light 400=Regular 500=Medium 600=Semibold 700=Bold（CSS weight） */
+  fontWeight?: number;
+  /** UIFontWeightTrait 原始值：-1.0(ultraLight) ~ 1.0(black) */
+  fontWeightTrait?: number;
   textColor?: ColorValue;
   numberOfLines?: number;
   /** NSTextAlignment 枚举值：0=left 1=center 2=right 3=justified 4=natural */
   textAlignment?: number;
+  /** NSLineBreakMode 枚举值：0=byWordWrapping 1=byCharWrapping 2=byClipping 3=byTruncatingHead 4=byTruncatingTail 5=byTruncatingMiddle */
+  lineBreakMode?: number;
+  /** 行高（pt），来自 NSParagraphStyle.minimumLineHeight */
+  lineHeight?: number;
+  /** 最大行高（pt），仅当与 lineHeight 不同时存在 */
+  maxLineHeight?: number;
+  /** 行高倍数，来自 NSParagraphStyle.lineHeightMultiple */
+  lineHeightMultiple?: number;
+  /** 字体默认行高（pt），无 attributedText 时的参考值 */
+  fontLineHeight?: number;
+  /** 字间距（pt），来自 NSKernAttributeName */
+  letterSpacing?: number;
 }
 
 export interface StackViewAttrs {
@@ -40,6 +63,55 @@ export interface StackViewAttrs {
   spacing?: number;
   /** UIStackView.Alignment 枚举值 */
   stackAlignment?: number;
+}
+
+export interface ButtonAttrs {
+  /** 按钮内容边距（content + title + image 整体）*/
+  contentInsets?: EdgeInsets;
+  /** 标题边距（title 相对于 content 区域）*/
+  titleInsets?: EdgeInsets;
+  /** 图片边距（image 相对于 content 区域）*/
+  imageInsets?: EdgeInsets;
+}
+
+export interface ScrollViewAttrs {
+  /** 内容边距（影响滚动区域）*/
+  contentInset?: EdgeInsets;
+  /** 滚动指示器边距 */
+  scrollIndicatorInsets?: EdgeInsets;
+}
+
+export interface TextViewAttrs {
+  /** 文本容器边距 */
+  containerInset?: EdgeInsets;
+}
+
+export interface GradientAttrs {
+  /** 渐变类型："axial"（线性） */
+  type?: string;
+  /** 渐变色标数组 [{r,g,b,a,hex}, ...] */
+  colors?: ColorValue[];
+  /** 色标位置数组 [0-1] */
+  locations?: number[];
+  /** 渐变起点（归一化坐标 0-1） */
+  startPoint?: { x: number; y: number };
+  /** 渐变终点（归一化坐标 0-1） */
+  endPoint?: { x: number; y: number };
+}
+
+export interface ConstraintAttrs {
+  /** 约束类型：leading/trailing/top/bottom/width/height/centerX/centerY */
+  type: string;
+  /** 约束常量值 */
+  constant: number;
+  /** 约束乘数 */
+  multiplier: number;
+  /** 约束优先级 */
+  priority: number;
+  /** 约束关系：eq/gte/lte */
+  relation: string;
+  /** 第二个关联项类名 */
+  secondItem: string;
 }
 
 export interface DisplayItem {
@@ -71,10 +143,37 @@ export interface DisplayItem {
   shadowOffsetWidth?: number;
   /** 阴影偏移 Y */
   shadowOffsetHeight?: number;
+  
+  // ── P0 新增属性（视觉还原度关键） ──────────────────────────────────────
+  
+  /** 是否裁剪超出边界的内容（UIView.clipsToBounds）- 圆角图片裁剪必需 */
+  clipsToBounds?: boolean;
+  /** 是否裁剪超出边界的内容（CALayer.masksToBounds）- 等价于 clipsToBounds */
+  masksToBounds?: boolean;
+  /** 图片/内容缩放模式（UIViewContentMode）：0=scaleToFill 1=scaleAspectFit 2=scaleAspectFill */
+  contentMode?: number;
+  /** 视图是否不透明（UIView.isOpaque）- 影响渲染性能和视觉效果 */
+  isOpaque?: boolean;
+  /** 色调颜色（UIView.tintColor）- 用于图标/按钮着色 */
+  tintColor?: ColorValue;
+  
   /** UILabel / UITextField / UITextView 相关属性 */
   label?: LabelAttrs;
   /** UIStackView 相关属性 */
   stackView?: StackViewAttrs;
+  /** UIButton 相关属性 */
+  button?: ButtonAttrs;
+  /** UIScrollView 相关属性 */
+  scrollView?: ScrollViewAttrs;
+  /** UITextView 相关属性 */
+  textView?: TextViewAttrs;
+
+  // ── P1 新增属性（像素级校对补充） ──────────────────────────────────────
+
+  /** CAGradientLayer 渐变层属性 */
+  gradient?: GradientAttrs;
+  /** Auto Layout 约束间距 */
+  constraints?: ConstraintAttrs[];
 
   // ── UserCustom 节点 ────────────────────────────────────────────────────
 
@@ -136,6 +235,12 @@ export class LookinBridgeClient {
   async refreshHierarchy(): Promise<HierarchyResponse> {
     const data = await this.request("POST", "/refresh");
     return data as HierarchyResponse;
+  }
+
+  /** 按需获取单个视图的详细属性（包含 cornerRadius/borderWidth/shadow 等）*/
+  async getViewAttrs(oid: number): Promise<DisplayItem> {
+    const data = await this.requestWithBody("POST", "/view_attrs", { oid });
+    return data as DisplayItem;
   }
 
   // ── 工具方法 ────────────────────────────────────────────────────────────────

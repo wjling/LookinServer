@@ -164,7 +164,7 @@ const TOOLS: Tool[] = [
       "- frame.x / frame.y / frame.width / frame.height（或完整 frame）\n" +
       "- backgroundColor、cornerRadius、borderWidth、borderColor\n" +
       "- alpha、hidden、clipsToBounds\n" +
-      "- fontSize、textColor、textAlignment、numberOfLines、text（UILabel）\n" +
+      "- fontSize、fontWeight、textColor、textAlignment、numberOfLines、text（UILabel）\n" +
       "- spacing、axis（UIStackView）\n\n" +
       "修改后立即生效，适合快速调试 UI 还原度。",
     inputSchema: {
@@ -327,14 +327,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "lookin_get_view_attrs": {
         const params = args as { oid: number };
-        const hierarchy = await client.getHierarchy();
-        const item = client.findItemByOid(hierarchy.items, params.oid);
-        if (!item) {
+        // 使用新的 /view_attrs 接口按需获取详细属性（包含 cornerRadius/borderWidth/shadow 等）
+        const item = await client.getViewAttrs(params.oid);
+        if ((item as unknown as { error?: string }).error) {
           return {
             content: [{
               type: "text",
-              text: `未找到 oid=${params.oid} 的视图，请先调用 lookin_refresh_hierarchy 刷新数据。`,
+              text: `❌ ${(item as unknown as { error: string }).error}`,
             }],
+            isError: true,
           };
         }
         return {
@@ -405,6 +406,19 @@ function formatHierarchyResult(
   renderTree(items, 0, lines);
   return lines.join("\n");
 }
+
+// ─── 启动 MCP 服务器 ─────────────────────────────────────────────────────────
+
+async function main() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error("Lookin MCP server running on stdio");
+}
+
+main().catch((error) => {
+  console.error("Fatal error in main():", error);
+  process.exit(1);
+});
 
 function renderTree(
   items: DisplayItem[],
@@ -601,13 +615,35 @@ function formatViewAttrs(item: DisplayItem): string {
     }
   }
 
+  // ── P0 新增属性 ──
+  if (item.clipsToBounds !== undefined || item.masksToBounds !== undefined) {
+    const clips = item.clipsToBounds ?? item.masksToBounds;
+    lines.push(`  clipsToBounds / masksToBounds:  ${clips ? "YES" : "NO"}`);
+  }
+  if (item.contentMode !== undefined) {
+    const modeMap: Record<number, string> = {
+      0: "scaleToFill", 1: "scaleAspectFit", 2: "scaleAspectFill",
+      3: "redraw", 4: "center", 5: "top", 6: "bottom",
+      7: "left", 8: "right", 9: "topLeft", 10: "topRight",
+      11: "bottomLeft", 12: "bottomRight"
+    };
+    lines.push(`  contentMode:      ${modeMap[item.contentMode] ?? item.contentMode}`);
+  }
+  if (item.isOpaque !== undefined) {
+    lines.push(`  isOpaque:         ${item.isOpaque ? "YES" : "NO"}`);
+  }
+  if (item.tintColor) {
+    lines.push(`  tintColor:        ${colorStr(item.tintColor)}`);
+  }
+
   if (item.label && Object.keys(item.label).length > 0) {
     lines.push(``, `── 文本 ──`);
     if (item.label.text !== undefined) {
       lines.push(`  text:        "${item.label.text}"`);
     }
     if (item.label.fontName) {
-      lines.push(`  font:        ${item.label.fontName}  ${item.label.fontSize ?? "?"}pt`);
+      const weightStr = item.label.fontWeight ? ` weight=${item.label.fontWeight}` : "";
+      lines.push(`  font:        ${item.label.fontName}  ${item.label.fontSize ?? "?"}pt${weightStr}`);
     }
     if (item.label.textColor) {
       lines.push(`  textColor:   ${colorStr(item.label.textColor)}`);
@@ -619,12 +655,84 @@ function formatViewAttrs(item: DisplayItem): string {
     if (item.label.textAlignment !== undefined) {
       lines.push(`  alignment:   ${alignMap[item.label.textAlignment] ?? item.label.textAlignment}`);
     }
+    // ── P1 新增：行高 & 字间距 ──
+    if (item.label.lineHeight !== undefined) {
+      lines.push(`  lineHeight:  ${item.label.lineHeight}pt`);
+    } else if (item.label.fontLineHeight !== undefined) {
+      lines.push(`  lineHeight:  ${item.label.fontLineHeight}pt (font default)`);
+    }
+    if (item.label.letterSpacing !== undefined) {
+      lines.push(`  letterSpacing: ${item.label.letterSpacing}pt`);
+    }
   }
 
   if (item.stackView && Object.keys(item.stackView).length > 0) {
     lines.push(``, `── UIStackView ──`);
     if (item.stackView.axis) lines.push(`  axis:      ${item.stackView.axis}`);
     if (item.stackView.spacing !== undefined) lines.push(`  spacing:   ${item.stackView.spacing}`);
+  }
+
+  // ── P1 新增：渐变层 ──
+  if (item.gradient) {
+    lines.push(``, `── 渐变层 ──`);
+    if (item.gradient.type) lines.push(`  type:       ${item.gradient.type}`);
+    if (item.gradient.startPoint) {
+      lines.push(`  startPoint: (${item.gradient.startPoint.x}, ${item.gradient.startPoint.y})`);
+    }
+    if (item.gradient.endPoint) {
+      lines.push(`  endPoint:   (${item.gradient.endPoint.x}, ${item.gradient.endPoint.y})`);
+    }
+    if (item.gradient.colors && item.gradient.colors.length > 0) {
+      const colorList = item.gradient.colors.map(c => colorStr(c)).join(", ");
+      lines.push(`  colors:     [${colorList}]`);
+    }
+    if (item.gradient.locations && item.gradient.locations.length > 0) {
+      lines.push(`  locations:  [${item.gradient.locations.join(", ")}]`);
+    }
+  }
+
+  // ── P1 新增：Auto Layout 约束 ──
+  if (item.constraints && item.constraints.length > 0) {
+    lines.push(``, `── Auto Layout 约束 ──`);
+    for (const c of item.constraints) {
+      lines.push(`  ${c.type}: constant=${c.constant} multiplier=${c.multiplier} priority=${c.priority} relation=${c.relation} → ${c.secondItem}`);
+    }
+  }
+
+  if (item.button && Object.keys(item.button).length > 0) {
+    lines.push(``, `── UIButton ──`);
+    if (item.button.contentInsets) {
+      const i = item.button.contentInsets;
+      lines.push(`  contentInsets:  top=${i.top} left=${i.left} bottom=${i.bottom} right=${i.right}`);
+    }
+    if (item.button.titleInsets) {
+      const i = item.button.titleInsets;
+      lines.push(`  titleInsets:    top=${i.top} left=${i.left} bottom=${i.bottom} right=${i.right}`);
+    }
+    if (item.button.imageInsets) {
+      const i = item.button.imageInsets;
+      lines.push(`  imageInsets:    top=${i.top} left=${i.left} bottom=${i.bottom} right=${i.right}`);
+    }
+  }
+
+  if (item.scrollView && Object.keys(item.scrollView).length > 0) {
+    lines.push(``, `── UIScrollView ──`);
+    if (item.scrollView.contentInset) {
+      const i = item.scrollView.contentInset;
+      lines.push(`  contentInset:  top=${i.top} left=${i.left} bottom=${i.bottom} right=${i.right}`);
+    }
+    if (item.scrollView.scrollIndicatorInsets) {
+      const i = item.scrollView.scrollIndicatorInsets;
+      lines.push(`  scrollIndicatorInsets:  top=${i.top} left=${i.left} bottom=${i.bottom} right=${i.right}`);
+    }
+  }
+
+  if (item.textView && Object.keys(item.textView).length > 0) {
+    lines.push(``, `── UITextView ──`);
+    if (item.textView.containerInset) {
+      const i = item.textView.containerInset;
+      lines.push(`  containerInset:  top=${i.top} left=${i.left} bottom=${i.bottom} right=${i.right}`);
+    }
   }
 
   if (item.hostViewController) {

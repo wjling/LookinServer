@@ -4,15 +4,15 @@
 import PackageDescription
 
 let package = Package(
-    name: "LookinServer",
+    name: "LookinMCP",
     platforms: [
         .iOS(.v9),.tvOS(.v9)
     ],
     products: [
         // Products define the executables and libraries a package produces, and make them visible to other packages.
         .library(
-            name: "LookinServer",
-            targets: ["LookinServer"]),
+            name: "LookinMCP",
+            targets: ["LookinMCP"]),
     ],
     dependencies: [
         // Dependencies declare other packages that this package depends on.
@@ -22,8 +22,8 @@ let package = Package(
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.
         // Targets can depend on other targets in this package, and on products in packages this package depends on.
         .target(
-            name: "LookinServer",
-            dependencies: [.target(name: "LookinServerSwift")],
+            name: "LookinMCP",
+            dependencies: [.target(name: "LookinMCPSwift")],
             path: "Src/Main",
             publicHeadersPath: "",
             cSettings: [
@@ -46,8 +46,8 @@ let package = Package(
             ]
         ),
         .target(
-            name: "LookinServerSwift",
-            dependencies: [.target(name: "LookinServerBase")],
+            name: "LookinMCPSwift",
+            dependencies: [.target(name: "LookinMCPBase")],
             path: "Src/Swift",
             cxxSettings: [
                 .define("SHOULD_COMPILE_LOOKIN_SERVER", to: "1", .when(configuration: .debug)),
@@ -59,7 +59,7 @@ let package = Package(
             ]
         ),
         .target(
-            name: "LookinServerBase",
+            name: "LookinMCPBase",
             dependencies: [],
             path: "Src/Base",
             publicHeadersPath: "",

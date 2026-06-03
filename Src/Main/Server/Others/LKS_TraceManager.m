@@ -28,7 +28,7 @@
 #endif
 
 #ifdef SPM_LOOKIN_SERVER_ENABLED
-@import LookinServerSwift;
+@import LookinMCPSwift;
 #define LOOKIN_SERVER_SWIFT_ENABLED_SUCCESSFULLY
 #endif
 

@@ -1,6 +1,6 @@
 # lookin-server-mcp
 
-MCP Server for [LookinServer](https://github.com/wjling/LookinServer/tree/mcp) —— 让 AI 能够实时读取 iOS App 的 UI 层级树，辅助界面调试与 Figma 转代码还原。
+MCP Server for [LookinMCP](https://github.com/wjling/LookinServer/tree/mcp) —— 让 AI 能够实时读取、分析并修改 iOS App 的 UI，辅助界面调试与 Figma 转代码还原。
 
 ---
 
@@ -9,7 +9,7 @@ MCP Server for [LookinServer](https://github.com/wjling/LookinServer/tree/mcp) �
 ```
 iOS App                    MCP Server               AI（CodeMaker / Claude）
 ┌─────────────────┐        ┌──────────────┐         ┌──────────────────────┐
-│  LookinServer   │        │              │         │                      │
+│  LookinMCP      │        │              │         │                      │
 │  + MCP Bridge   │◄──────►│ lookin-server│◄───────►│  lookin_get_hierarchy│
 │  port: 9877     │  HTTP  │     -mcp     │  stdio  │  lookin_find_view    │
 └─────────────────┘        └──────────────┘         └──────────────────────┘
@@ -21,13 +21,13 @@ iOS 侧通过 `LKS_MCPBridge`（POSIX TCP Socket + GCD HTTP Server）暴露 UI �
 
 ## 快速开始
 
-### 第一步：iOS 项目集成 LookinServer（含 MCP Bridge）
+### 第一步：iOS 项目集成 LookinMCP（含 MCP Bridge）
 
 **CocoaPods：**
 
 ```ruby
 # MCP Bridge 已内置于 Core（纯 OC），OC 项目和 Swift 项目均可直接使用
-pod 'LookinServer',
+pod 'LookinMCP',
     :git => 'https://github.com/wjling/LookinServer.git',
     :branch => 'mcp',
     :configurations => ['Debug']
@@ -99,6 +99,12 @@ AI：→ 调用 lookin_find_view(className: "UILabel", isHidden: true)
 
 你：帮我分析当前页面结构
 AI：→ 调用 lookin_summarize，输出摘要
+
+你：获取第 3 个 View 的完整属性（字体/颜色/圆角等）
+AI：→ 调用 lookin_get_view_attrs(oid: 3)
+
+你：把第 5 个 View 的圆角改成 8，背景色改成红色
+AI：→ 调用 lookin_modify_view(oid: 5, modifications: {cornerRadius: 8, backgroundColor: "#FF0000"})
 ```
 
 ---
@@ -112,6 +118,8 @@ AI：→ 调用 lookin_summarize，输出摘要
 | `lookin_refresh_hierarchy` | 主动刷新并获取最新层级树 |
 | `lookin_find_view` | 按类名 / ViewController / 隐藏状态搜索视图 |
 | `lookin_get_view_detail` | 获取单个视图的详细信息 |
+| `lookin_get_view_attrs` | 获取视图完整 UI 属性（字体/颜色/圆角/阴影/渐变/约束等） |
+| `lookin_modify_view` | 运行时修改视图属性，无需重新编译 |
 | `lookin_summarize` | 层级树智能摘要（页面结构概览） |
 
 ---
@@ -129,7 +137,7 @@ AI：→ 调用 lookin_summarize，输出摘要
 
 - **与 Lookin Mac App 互不干扰**：MCP Bridge 使用独立端口 9877，不影响原有 Lookin 调试功能
 - **仅在 Debug 模式使用**：建议 Podfile 加 `:configurations => ['Debug']`，Release 包不含此代码
-- **纯 OC 实现，无 Swift 依赖**：MCP Bridge 已内置于 `Core` subspec，OC 项目无需额外配置
+- **纯 OC 实现**：MCP Bridge 已内置于 Core，OC 项目无需额外配置
 
 ---
 
